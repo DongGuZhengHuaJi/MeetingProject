@@ -36,7 +36,7 @@ class _LoginPageState extends State<LoginPage> {
 
       final wtm = WebRTCManager();
       // 登录时，全局初始化信令和 WebSocket，并完成注册
-      await wtm.initSignaling(account, 'ws://114.132.52.242:8080');
+      await wtm.initializeSignaling(selfId: account, signalingUrl: 'ws://114.132.52.242:8080');
 
       Navigator.pushReplacementNamed(context, '/home', arguments: {'selfId': account});
     } else {

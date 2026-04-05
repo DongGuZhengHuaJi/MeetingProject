@@ -1,17 +1,22 @@
+// pages/meeting_page.dart
+
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'webrtc_mgr.dart';
+import 'peer_models.dart';
 
 class MeetingPage extends StatefulWidget {
   final String selfId;
   final String roomId;
   final bool isHost;
+  final String signalingUrl;
 
   const MeetingPage({
     super.key,
     required this.selfId,
     required this.roomId,
     this.isHost = false,
+    required this.signalingUrl,
   });
 
   @override
@@ -19,90 +24,147 @@ class MeetingPage extends StatefulWidget {
 }
 
 class _MeetingPageState extends State<MeetingPage> {
-  final _webRTCManager = WebRTCManager();
-
+  final WebRTCManager _manager = WebRTCManager();
+  
   @override
   void initState() {
     super.initState();
-    _webRTCManager.addListener(_onUpdate);
-    Future.microtask(() {
-      _webRTCManager.startMeeting(roomId: widget.roomId, isCreate: widget.isHost);
-    });
+    _manager.addListener(_onManagerUpdate);
+    _initializeMeeting();
   }
-
-  void _onUpdate() { if (mounted) setState(() {}); }
+  
+  /// 初始化会议
+  Future<void> _initializeMeeting() async {
+    try {
+      // 1. 初始化信令
+      await _manager.initializeSignaling(
+        selfId: widget.selfId,
+        signalingUrl: widget.signalingUrl,
+      );
+      
+      // 2. 进入房间
+      await _manager.joinRoom(
+        roomId: widget.roomId,
+        isHost: widget.isHost,
+      );
+      
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('初始化失败: $e')),
+        );
+      }
+    }
+  }
+  
+  void _onManagerUpdate() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void dispose() {
-    _webRTCManager.removeListener(_onUpdate);
-    _webRTCManager.leaveCurrentRoom();
+    _manager.removeListener(_onManagerUpdate);
+    _manager.leaveRoom();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // 汇总参会者
-    final me = _Participant(
-      id: widget.selfId,
-      name: "我",
-      renderer: _webRTCManager.localRenderer,
-      isVideoOn: _webRTCManager.isCamOn,
-      isAudioOn: _webRTCManager.isMicOn,
-    );
-
-    final List<_Participant> others = _webRTCManager.remoteRenderers.entries.map((e) {
-      return _Participant(
-        id: e.key,
-        name: e.key,
-        renderer: e.value,
-        // 这里需要从 manager 的状态 Map 中取值，演示先设为 false 测试效果
-        isVideoOn: _webRTCManager.remoteVideoStates[e.key] ?? false, 
-        isAudioOn: true,
-      );
-    }).toList();
-
-    final allParticipants = [me, ...others];
-
-    // 【核心逻辑】是否所有人（我+他人）都关闭了视频
-    bool allVideosOff = allParticipants.every((p) => !p.isVideoOn);
+    final state = _manager.meetingState;
+    
+    // 处理错误
+    if (state.errorMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(state.errorMessage!)),
+        );
+      });
+    }
+    
+    // 构建参会者列表
+    final participants = _buildParticipantList();
+    final allVideosOff = participants.every((p) => !p.isVideoOn);
 
     return Scaffold(
-      backgroundColor: Colors.white, // 腾讯会议白色调
-      appBar: _buildWhiteAppBar(),
+      backgroundColor: Colors.white,
+      appBar: _buildAppBar(),
       body: Column(
         children: [
           Expanded(
             child: allVideosOff 
-              ? _buildAvatarGrid(allParticipants) // 所有人关闭时的头像阵列
-              : _buildVideoGrid(allParticipants), // 有人开启时的视频网格
+              ? _buildAvatarGrid(participants)
+              : _buildVideoGrid(participants),
           ),
-          _buildWhiteBottomBar(),
+          _buildBottomBar(),
         ],
       ),
     );
   }
+  
+  /// 构建参会者列表（本地 + 远端）
+  List<_ParticipantViewModel> _buildParticipantList() {
+    final List<_ParticipantViewModel> list = [];
+    
+    // 添加自己
+    list.add(_ParticipantViewModel(
+      id: widget.selfId,
+      name: '我',
+      renderer: _manager.localRenderer,
+      isVideoOn: _manager.isCameraOn,
+      isAudioOn: _manager.isMicrophoneOn,
+      isLocal: true,
+    ));
+    
+    // 添加远端用户
+    for (final peer in _manager.remotePeers.values) {
+      list.add(_ParticipantViewModel(
+        id: peer.id,
+        name: peer.name,
+        renderer: peer.renderer,
+        isVideoOn: peer.isVideoOn,
+        isAudioOn: peer.isAudioOn,
+        isLocal: false,
+      ));
+    }
+    
+    return list;
+  }
 
-  // 1. 白色顶部栏
-  PreferredSizeWidget _buildWhiteAppBar() {
+  PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: Colors.white,
       elevation: 0,
       centerTitle: true,
       title: Column(
         children: [
-          Text("视频会议", style: TextStyle(color: Colors.black.withOpacity(0.8), fontSize: 16)),
-          Text("ID: ${widget.roomId}", style: const TextStyle(color: Colors.black45, fontSize: 11)),
+          Text(
+            '视频会议',
+            style: TextStyle(
+              color: Colors.black.withOpacity(0.8),
+              fontSize: 16,
+            ),
+          ),
+          Text(
+            'ID: ${widget.roomId}',
+            style: const TextStyle(
+              color: Colors.black45,
+              fontSize: 11,
+            ),
+          ),
         ],
       ),
       leading: const Icon(Icons.info_outline, color: Colors.black45),
       actions: [
-        IconButton(icon: const Icon(Icons.flip_camera_ios_outlined, color: Colors.black45), onPressed: () {}),
+        IconButton(
+          icon: const Icon(Icons.flip_camera_ios_outlined, color: Colors.black45),
+          onPressed: () {}, // TODO: 切换摄像头
+        ),
       ],
     );
   }
 
-  // 2. 【重点实现】所有人关闭视频时的“头像格阵” (白色背景，无黑框)
-  Widget _buildAvatarGrid(List<_Participant> participants) {
+  /// 所有人关闭视频时显示头像网格
+  Widget _buildAvatarGrid(List<_ParticipantViewModel> participants) {
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
@@ -111,131 +173,173 @@ class _MeetingPageState extends State<MeetingPage> {
           spacing: 30,
           runSpacing: 30,
           alignment: WrapAlignment.center,
-          children: participants.map((p) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildCircularAvatar(p.name, 70),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (!p.isAudioOn) const Icon(Icons.mic_off, color: Colors.red, size: 12),
-                  const SizedBox(width: 4),
-                  Text(p.name, style: const TextStyle(color: Colors.black87, fontSize: 12)),
-                ],
-              )
-            ],
-          )).toList(),
+          children: participants.map((p) => _buildAvatarItem(p)).toList(),
         ),
       ),
     );
   }
+  
+  Widget _buildAvatarItem(_ParticipantViewModel p) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildCircularAvatar(p.name, 70),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!p.isAudioOn) 
+              const Icon(Icons.mic_off, color: Colors.red, size: 12),
+            const SizedBox(width: 4),
+            Text(
+              p.name,
+              style: const TextStyle(color: Colors.black87, fontSize: 12),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 
-  // 3. 正常视频网格 (有人开视频时显示，背景是淡灰色，视频窗口之间有细白边隔开)
-   Widget _buildVideoGrid(List<_Participant> participants) {
-    int count = participants.length;
-    double screenRatio = MediaQuery.of(context).size.width / MediaQuery.of(context).size.height;
-    double videoAspectRatio = 16 / 9; // 标准视频比例
+  /// 有人开启视频时显示视频网格
+  Widget _buildVideoGrid(List<_ParticipantViewModel> participants) {
+    final count = participants.length;
+    final screenRatio = MediaQuery.of(context).size.width / 
+                        MediaQuery.of(context).size.height;
+    const videoAspectRatio = 16 / 9;
 
     return GridView.builder(
-      padding: const EdgeInsets.all(0),
+      padding: EdgeInsets.zero,
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: count <= 1 ? 1 : 2,
         childAspectRatio: count <= 1 ? screenRatio : videoAspectRatio,
       ),
       itemCount: count,
-      itemBuilder: (context, index) {
-        final p = participants[index];
-        return Container(
-          margin: EdgeInsets.zero,
-          color: Colors.black,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (p.isVideoOn)
-                webrtc.RTCVideoView(
-                  p.renderer,
-                  mirror: p.id == "我" || p.id == widget.selfId,
-                  objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
-                )
-              else
-                Center(child: _buildCircularAvatar(p.name, 60)),
-              
-              Positioned(
-                left: 8,
-                bottom: 8,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(p.isAudioOn ? Icons.mic : Icons.mic_off, 
-                          color: p.isAudioOn ? Colors.white : Colors.red, 
-                          size: 10),
-                      const SizedBox(width: 4),
-                      Text(p.name, 
-                          style: const TextStyle(color: Colors.white, fontSize: 10)),
-                    ],
-                  ),
-                ),
-              )
-            ],
-          ),
-        );
-      },
+      itemBuilder: (context, index) => _buildVideoItem(participants[index]),
     );
   }
-
-  // 圆形蓝色头像组件
-  Widget _buildCircularAvatar(String name, double size) {
+  
+  Widget _buildVideoItem(_ParticipantViewModel p) {
     return Container(
-      width: size, height: size,
-      decoration: const BoxDecoration(color: Color(0xFF0052D9), shape: BoxShape.circle),
-      child: Center(
-        child: Text(
-          name.isNotEmpty ? name[0].toUpperCase() : "?",
-          style: TextStyle(color: Colors.white, fontSize: size * 0.4, fontWeight: FontWeight.bold),
-        ),
-      ),
-    );
-  }
-
-  // 4. 白色底栏
-  Widget _buildWhiteBottomBar() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.black.withOpacity(0.05))),
-      ),
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).padding.bottom + 10, top: 10),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
+      margin: EdgeInsets.zero,
+      color: Colors.black,
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          _buildToolBtn(_webRTCManager.isMicOn ? Icons.mic_none : Icons.mic_off, "静音", _webRTCManager.isMicOn ? Colors.black87 : Colors.red, _webRTCManager.toggleAudio),
-          _buildToolBtn(_webRTCManager.isCamOn ? Icons.videocam_outlined : Icons.videocam_off, "视频", _webRTCManager.isCamOn ? Colors.black87 : Colors.red, _webRTCManager.toggleVideo),
-          _buildToolBtn(Icons.screen_share_outlined, "共享屏幕", Colors.black87, () {}),
-          _buildToolBtn(Icons.group_outlined, "成员", Colors.black87, () {}),
+          // 视频或头像
+          if (p.isVideoOn && p.renderer != null)
+            webrtc.RTCVideoView(
+              p.renderer!,
+              mirror: p.isLocal,
+              objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+            )
+          else
+            Center(child: _buildCircularAvatar(p.name, 60)),
           
-          // 红色离开按钮
-          GestureDetector(
-            onTap: () => Navigator.pop(context),
+          // 信息浮层
+          Positioned(
+            left: 8,
+            bottom: 8,
             child: Container(
-              margin: const EdgeInsets.only(left: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(color: const Color(0xFFE54545), borderRadius: BorderRadius.circular(6)),
-              child: const Text("结束会议", style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    p.isAudioOn ? Icons.mic : Icons.mic_off,
+                    color: p.isAudioOn ? Colors.white : Colors.red,
+                    size: 10,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    p.name,
+                    style: const TextStyle(color: Colors.white, fontSize: 10),
+                  ),
+                ],
+              ),
             ),
-          )
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildToolBtn(IconData icon, String label, Color color, VoidCallback onTap) {
+  Widget _buildCircularAvatar(String name, double size) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: const BoxDecoration(
+        color: Color(0xFF0052D9),
+        shape: BoxShape.circle,
+      ),
+      child: Center(
+        child: Text(
+          name.isNotEmpty ? name[0].toUpperCase() : '?',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: size * 0.4,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomBar() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          top: BorderSide(color: Colors.black.withOpacity(0.05)),
+        ),
+      ),
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).padding.bottom + 10,
+        top: 10,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _buildToolButton(
+            icon: _manager.isMicrophoneOn ? Icons.mic_none : Icons.mic_off,
+            label: '静音',
+            color: _manager.isMicrophoneOn ? Colors.black87 : Colors.red,
+            onTap: _manager.toggleMicrophone,
+          ),
+          _buildToolButton(
+            icon: _manager.isCameraOn ? Icons.videocam_outlined : Icons.videocam_off,
+            label: '视频',
+            color: _manager.isCameraOn ? Colors.black87 : Colors.red,
+            onTap: _manager.toggleCamera,
+          ),
+          _buildToolButton(
+            icon: Icons.screen_share_outlined,
+            label: '共享屏幕',
+            color: Colors.black87,
+            onTap: () {}, // TODO: 屏幕共享
+          ),
+          _buildToolButton(
+            icon: Icons.group_outlined,
+            label: '成员',
+            color: Colors.black87,
+            onTap: _showParticipantsList,
+          ),
+          _buildLeaveButton(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToolButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
     return InkWell(
       onTap: onTap,
       child: Column(
@@ -243,18 +347,136 @@ class _MeetingPageState extends State<MeetingPage> {
         children: [
           Icon(icon, color: color, size: 24),
           const SizedBox(height: 4),
-          Text(label, style: TextStyle(color: color.withOpacity(0.8), fontSize: 10)),
+          Text(
+            label,
+            style: TextStyle(color: color.withOpacity(0.8), fontSize: 10),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLeaveButton() {
+    return GestureDetector(
+      onTap: () => _showLeaveConfirmDialog(),
+      child: Container(
+        margin: const EdgeInsets.only(left: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFFE54545),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: const Text(
+          '结束会议',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+  
+  void _showLeaveConfirmDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('离开会议'),
+        content: const Text('确定要离开当前会议吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
+            child: const Text('离开', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _showParticipantsList() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '参会成员 (${_manager.remotePeers.length + 1})',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.person),
+              title: Text('${widget.selfId} (我)'),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _manager.isMicrophoneOn ? Icons.mic : Icons.mic_off,
+                    size: 20,
+                    color: _manager.isMicrophoneOn ? Colors.green : Colors.red,
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    _manager.isCameraOn ? Icons.videocam : Icons.videocam_off,
+                    size: 20,
+                    color: _manager.isCameraOn ? Colors.green : Colors.red,
+                  ),
+                ],
+              ),
+            ),
+            ..._manager.remotePeers.values.map((peer) => ListTile(
+              leading: const Icon(Icons.person_outline),
+              title: Text(peer.name),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    peer.isAudioOn ? Icons.mic : Icons.mic_off,
+                    size: 20,
+                    color: peer.isAudioOn ? Colors.green : Colors.red,
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    peer.isVideoOn ? Icons.videocam : Icons.videocam_off,
+                    size: 20,
+                    color: peer.isVideoOn ? Colors.green : Colors.red,
+                  ),
+                ],
+              ),
+            )),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _Participant {
+/// 参会者视图模型（UI 层专用）
+class _ParticipantViewModel {
   final String id;
   final String name;
-  final webrtc.RTCVideoRenderer renderer;
+  final webrtc.RTCVideoRenderer? renderer;
   final bool isVideoOn;
   final bool isAudioOn;
-  _Participant({required this.id, required this.name, required this.renderer, required this.isVideoOn, required this.isAudioOn});
+  final bool isLocal;
+
+  _ParticipantViewModel({
+    required this.id,
+    required this.name,
+    this.renderer,
+    required this.isVideoOn,
+    required this.isAudioOn,
+    required this.isLocal,
+  });
 }

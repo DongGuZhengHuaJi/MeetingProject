@@ -1,458 +1,715 @@
+
+// managers/webrtc_manager.dart
+
 import 'dart:async';
 import 'dart:convert';
-import 'package:change_notifier/change_notifier.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
+import 'peer_models.dart';
 import 'websocket_mgr.dart';
 
+/// WebRTC 会议管理器
+/// 
+/// 职责：
+/// 1. 管理信令连接
+/// 2. 管理本地媒体流
+/// 3. 管理所有远端 Peer 连接
+/// 4. 处理信令消息并分发
 class WebRTCManager extends ChangeNotifier {
+  // ==================== 单例 ====================
   static final WebRTCManager _instance = WebRTCManager._internal();
-
-  factory WebRTCManager() {
-    return _instance;
-  }
-
+  factory WebRTCManager() => _instance;
   WebRTCManager._internal();
-
-  final ws = WebsocketMgr();
+  
+  // ==================== 依赖服务 ====================
+  final WebsocketMgr _ws = WebsocketMgr();
+  
+  // ==================== 本地状态 ====================
   String _selfId = '';
-  String _currentRoomId = '';
-  bool _isSignalingInitialized = false;
-  StreamSubscription<String>? _wsSubscription;
-
   final webrtc.RTCVideoRenderer _localRenderer = webrtc.RTCVideoRenderer();
   webrtc.MediaStream? _localStream;
-  bool _isMicOn = false;
-  bool _isCamOn = false;
-  static const Map<String, int> kHDConstraints = {'width': 1280, 'height': 720};
-
-  final Map<String, webrtc.RTCPeerConnection> _peerConnections = {};
-  final Map<String, webrtc.RTCVideoRenderer> _remoteRenderers = {};
-  Map<String, bool> remoteVideoStates = {};
-  final Map<String, List<webrtc.RTCIceCandidate>> _iceCandidatesBuffer = {};
-
-  Map<String, webrtc.RTCVideoRenderer> get remoteRenderers => _remoteRenderers;
-  webrtc.RTCVideoRenderer get localRenderer => _localRenderer;
+  bool _isCameraOn = false;
+  bool _isMicrophoneOn = false;
+  
+  // ==================== 会议状态 ====================
+  MeetingState _meetingState = const MeetingState();
+  final Map<String, RemotePeer> _remotePeers = {};
+  StreamSubscription<String>? _wsSubscription;
+  
+  // ==================== 常量配置 ====================
+  static const Map<String, dynamic> _defaultVideoConstraints = {
+    'width': {'ideal': 1280},
+    'height': {'ideal': 720},
+    'facingMode': 'user',
+  };
+  
+  static const Map<String, dynamic> _iceServers = {
+    'iceServers': [
+      {'urls': 'stun:stun.l.google.com:19302'},
+    ],
+  };
+  
+  // ==================== 公共 Getter ====================
   String get selfId => _selfId;
-  bool get isMicOn => _isMicOn;
-  bool get isCamOn => _isCamOn;
-
-
-  Future<void> initSignaling(String selfId, String signalingUrl) async {
-    if (_isSignalingInitialized) return;
+  webrtc.RTCVideoRenderer get localRenderer => _localRenderer;
+  bool get isCameraOn => _isCameraOn;
+  bool get isMicrophoneOn => _isMicrophoneOn;
+  MeetingState get meetingState => _meetingState;
+  
+  /// 获取所有远端参会者（不可修改的视图）
+  Map<String, RemotePeer> get remotePeers => Map.unmodifiable(_remotePeers);
+  
+  /// 是否已在房间中
+  bool get isInRoom => _meetingState.isInRoom;
+  
+  // ==================== 生命周期管理 ====================
+  
+  /// 初始化信令连接
+  /// 
+  /// [selfId] 当前用户唯一标识
+  /// [signalingUrl] WebSocket 服务器地址
+  Future<void> initializeSignaling({
+    required String selfId,
+    required String signalingUrl,
+  }) async {
+    if (_meetingState.isSignalingConnected) {
+      logger.w('信令已初始化，跳过');
+      return;
+    }
+    
     _selfId = selfId;
     
-    await ws.connect(signalingUrl);
-    
-    // 监听 WebSocket 消息（全局只监听一次）
-    _wsSubscription = ws.messages.listen((message) {
-      final data = jsonDecode(message);
-      _handleSignalingMessage(data);
-    });
-
-    // 连接成功后，立刻注册身份
-    ws.send(jsonEncode({
-      'type': 'register',
-      'session_id': _selfId,
-    }));
-
-    _isSignalingInitialized = true;
-    logger.i("全局信令通道初始化完成，当前用户ID: $_selfId");
-  }
-
-  void _handleSignalingMessage(Map<String, dynamic> data) {
-    final type = data['type'];
-    final fromId = (data['from'] ?? data['session_id'])?.toString();
-
-    switch (type) {
-      case 'register_success':
-        logger.i('注册成功！');
-        break;
-      case 'user_joined': // 有人进房，我主动呼叫
-        if (fromId != null && fromId != _selfId) {
-          logger.i('发现新人 $fromId，发起呼叫');
-          _makeCall(fromId); 
-          remoteVideoStates[fromId] = false; // 默认远端视频状态为关闭，等对方更新状态后再刷新 UI
-        }
-        break;
-      case 'media_state':
-        if (fromId != null) {
-          remoteVideoStates[fromId] = data['videoOn'] ?? false;
-          // 这里可以扩展处理音频状态 data['audioOn']
-        }
-        break;
-      case 'offer':
-        if (fromId != null) handleOffer(fromId, data['sdp']);
-        break;
-      case 'answer':
-        if (fromId != null) handleAnswer(fromId, data['sdp']);
-        break;
-      case 'candidate':
-        if (fromId != null) handleCandidate(fromId, data['candidate']);
-        break;
-      case 'leave':
-        if (fromId != null) handleLeave(fromId);
-        break;
-      case 'error':
-        logger.e('服务器报错: ${data['message']}');
-        break;
-      // ... 其他处理 ...
-    }
-    notifyListeners();
-  }
-
-  Future<void> startMeeting({required String roomId, bool isCreate = false}) async {
-    // 1. 初始化本地流和渲染器
-    if (_localRenderer.textureId == null) {
-      await _localRenderer.initialize();
-    }
-    
-    // 确保旧流已经被彻底清理 (防御性编程)
-    if (_localStream != null) {
-      _localStream!.getTracks().forEach((track) => track.stop());
-      _localStream!.dispose();
-    }
-
-
     try {
-      _localStream = await webrtc.navigator.mediaDevices.getUserMedia({
-        'audio': true,
+      await _ws.connect(signalingUrl);
+      
+      // 监听信令消息
+      _wsSubscription = _ws.messages.listen(
+        _handleSignalingMessage,
+        onError: (error) {
+          logger.e('WebSocket 错误: $error');
+          _updateMeetingState(errorMessage: '信令连接错误: $error');
+        },
+        onDone: () {
+          logger.w('WebSocket 连接关闭');
+          _updateMeetingState(isSignalingConnected: false);
+        },
+      );
+      
+      // 注册身份
+      _sendSignalingMessage({
+        'type': 'register',
+        'session_id': _selfId,
+      });
+      
+      _updateMeetingState(isSignalingConnected: true);
+      logger.i('✅ 信令初始化完成，用户ID: $_selfId');
+      
+    } catch (e) {
+      logger.e('❌ 信令初始化失败: $e');
+      _updateMeetingState(errorMessage: '初始化失败: $e');
+      rethrow;
+    }
+  }
+  
+  /// 进入会议房间
+  /// 
+  /// [roomId] 房间号
+  /// [isHost] 是否为创建者（房主）
+  Future<void> joinRoom({
+    required String roomId,
+    bool isHost = false,
+  }) async {
+    _ensureSignalingReady();
+    
+    if (_meetingState.isInRoom) {
+      throw StateError('已在房间中，请先调用 leaveRoom()');
+    }
+    
+    try {
+      // 1. 初始化本地媒体
+      await _initializeLocalMedia();
+      
+      // 2. 发送进房信令
+      _sendSignalingMessage({
+        'type': isHost ? 'create' : 'join',
+        'room': roomId,
+      });
+      
+      _updateMeetingState(
+        isInRoom: true,
+        currentRoomId: roomId,
+      );
+      
+      logger.i('🚪 已进入房间: $roomId');
+      
+    } catch (e) {
+      logger.e('❌ 进入房间失败: $e');
+      await _cleanupLocalMedia();
+      rethrow;
+    }
+  }
+  
+  /// 离开当前房间
+  Future<void> leaveRoom() async {
+    if (!_meetingState.isInRoom) return;
+    
+    final roomId = _meetingState.currentRoomId;
+    
+    // 1. 通知服务器
+    if (roomId != null) {
+      _sendSignalingMessage({
+        'type': 'leave',
+        'room': roomId,
+      });
+    }
+    
+    // 2. 清理所有远端连接
+    await _cleanupAllRemotePeers();
+    
+    // 3. 清理本地媒体
+    await _cleanupLocalMedia();
+    
+    _updateMeetingState(
+      isInRoom: false,
+      currentRoomId: null,
+    );
+    
+    logger.i('🚪 已离开房间');
+  }
+  
+  /// 切换麦克风状态
+  Future<void> toggleMicrophone() async {
+    final audioTracks = _localStream?.getAudioTracks() ?? [];
+    if (audioTracks.isEmpty) {
+      logger.w('没有可用的音频轨道');
+      return;
+    }
+    
+    final newState = !_isMicrophoneOn;
+    for (final track in audioTracks) {
+      track.enabled = newState;
+    }
+    
+    _isMicrophoneOn = newState;
+    _broadcastMediaState();
+    notifyListeners();
+    
+    logger.i('🎤 麦克风: ${_isMicrophoneOn ? "开启" : "关闭"}');
+  }
+  
+  /// 切换摄像头状态
+  Future<void> toggleCamera() async {
+    final videoTracks = _localStream?.getVideoTracks() ?? [];
+    if (videoTracks.isEmpty) {
+      logger.w('没有可用的视频轨道');
+      return;
+    }
+    
+    final newState = !_isCameraOn;
+    for (final track in videoTracks) {
+      track.enabled = newState;
+    }
+    
+    _isCameraOn = newState;
+    _broadcastMediaState();
+    notifyListeners();
+    
+    logger.i('📹 摄像头: ${_isCameraOn ? "开启" : "关闭"}');
+  }
+  
+  /// 动态调整摄像头分辨率
+  Future<void> changeCameraQuality({
+    required int width,
+    required int height,
+  }) async {
+    if (_localStream == null) return;
+    
+    try {
+      // 1. 获取新分辨率的视频轨道
+      final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+        'audio': false,
         'video': {
           'facingMode': 'user',
-          'width': {'ideal': 1280}, // 只用 ideal，不要用 min
-          'height': {'ideal': 720},
+          'width': {'ideal': width},
+          'height': {'ideal': height},
         },
       });
       
-      // 【关键检查】：确保把流赋给了 renderer
+      final newTrack = newStream.getVideoTracks().firstOrNull;
+      if (newTrack == null) throw Exception('无法获取新视频轨道');
+      
+      newTrack.enabled = _isCameraOn;
+      
+      // 2. 替换旧轨道
+      final oldTracks = _localStream!.getVideoTracks();
+      if (oldTracks.isNotEmpty) {
+        final oldTrack = oldTracks.first;
+        try {
+          await _localStream!.removeTrack(oldTrack);
+        } catch (e) {
+          logger.w('移除旧轨道时发生非致命错误: $e');
+        }
+        await oldTrack.stop();
+      }
+      
+      await _localStream!.addTrack(newTrack);
+      
+      // 3. 刷新本地渲染器
+      _localRenderer.srcObject = null;
       _localRenderer.srcObject = _localStream;
-      _isCamOn = true; // 默认开启视频
+      
+      // 4. 同步给所有远端
+      await _replaceTrackOnAllConnections(newTrack);
+      
+      logger.i('✅ 分辨率切换成功: ${width}x${height}');
       notifyListeners();
+      
     } catch (e) {
-      print("摄像头启动失败: $e"); // 如果还有问题，控制台会打印这里
+      logger.e('❌ 切换分辨率失败: $e');
+      rethrow;
     }
-  
-
-    _localStream!.getAudioTracks()[0].enabled = false;
-    _localStream!.getVideoTracks()[0].enabled = false;
-    _isCamOn = false;
-    _isMicOn = false;
-
-    _localRenderer.srcObject = _localStream;
-    notifyListeners();
-
-    // 2. 发送进房或建房指令 (直接使用已经连接好的 ws)
-    _currentRoomId = roomId;
-    ws.send(jsonEncode({
-      'type': isCreate ? 'create' : 'join',
-      'room': roomId,
-    }));
   }
   
-
-  Future<void> leaveCurrentRoom() async {
-    // 1. 告诉服务器我要退房了
-    if (_currentRoomId.isNotEmpty) {
-      ws.send(jsonEncode({'type': 'leave', 'room': _currentRoomId}));
-      _currentRoomId = '';
-    }
-
-    // 2. 清理所有连线和远程渲染器
-    for (final pc in _peerConnections.values) { await pc.close(); }
-    _peerConnections.clear();
-    for (final renderer in _remoteRenderers.values) { 
-      renderer.srcObject = null; // 先置空
-      await renderer.dispose(); 
-    }
-    _remoteRenderers.clear();
+  /// 调整指定连接的发送画质
+  Future<void> adjustSendQuality(
+    String peerId, {
+    double scaleDownBy = 1.0,
+    int? maxBitrate,
+  }) async {
+    final peer = _remotePeers[peerId];
+    if (peer?.connection == null) return;
     
-    // 3. 【核心修复 3】彻底关闭本地摄像头和麦克风硬件
-    if (_localStream != null) {
-      for (var track in _localStream!.getTracks()) {
-        track.stop(); // 停止硬件轨道
-      }
-      _localStream!.dispose(); // 释放流内存
-      _localStream = null;
-    }
-    
-    _localRenderer.srcObject = null;
-
-    notifyListeners();
-  }
-
-void toggleAudio() {
-  _isMicOn = !_isMicOn;
-  _localStream?.getAudioTracks().forEach((track) => track.enabled = _isMicOn);
-
-  notifyListeners();
-}
-
-void toggleVideo() {
-  _isCamOn = !_isCamOn;
-  _localStream?.getVideoTracks().forEach((track) {
-    track.enabled = _isCamOn;
-  });
-  
-  // 【关键】广播自己的状态给房间其他人
-  ws.send(jsonEncode({
-    'type': 'media_state',
-    'from': _selfId,
-    'videoOn': _isCamOn,
-    'audioOn': _isMicOn,
-  }));
-  
-  notifyListeners();
-}
-
-// 动态调整本地摄像头分辨率
-// webrtc_mgr.dart
-
-Future<void> changeCameraQuality({required int width, required int height}) async {
-  if (_localStream == null) return;
-
-  try {
-    // 1. 先准备好新分辨率的轨道，确保硬件能正常响应
-    webrtc.MediaStream newStream = await webrtc.navigator.mediaDevices.getUserMedia({
-      'audio': false, // 切换分辨率不需要重新获取音频
-      'video': {
-        'facingMode': 'user',
-        'width': {'ideal': width},
-        'height': {'ideal': height},
-      },
-    });
-    var newTrack = newStream.getVideoTracks().first;
-    newTrack.enabled = _isCamOn; // 继承当前的开关状态
-
-    // 2. 找到旧轨道
-    final videoTracks = _localStream!.getVideoTracks();
-    if (videoTracks.isNotEmpty) {
-      var oldTrack = videoTracks.first;
-
-      // 3. 【核心修复】先从流中移除，再停止硬件。并包裹 try-catch 防止崩溃
-      try {
-        await _localStream!.removeTrack(oldTrack);
-      } catch (e) {
-        logger.w("移除旧轨道时发生非致命错误: $e");
-      }
-      await oldTrack.stop(); // 彻底关闭旧硬件占用
-    }
-
-    // 4. 将新轨道加入本地流对象
-    await _localStream!.addTrack(newTrack);
-
-    // 5. 【关键】强制刷新本地渲染器
-    // 必须先置空再重新赋值，否则 Flutter 的 Texture 可能会卡在最后一帧
-    _localRenderer.srcObject = null;
-    _localRenderer.srcObject = _localStream;
-
-    // 6. 同步给所有远端用户
-    for (var pc in _peerConnections.values) {
-      final senders = await pc.getSenders();
+    try {
+      final senders = await peer!.connection!.getSenders();
       final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
         (s) => s?.track?.kind == 'video',
         orElse: () => null,
       );
-
-      if (videoSender != null) {
-        // replaceTrack 是 WebRTC 提供的无缝替换技术
-        await videoSender.replaceTrack(newTrack);
-      }
-    }
-
-    logger.i("✅ 成功无缝切换分辨率至: ${width}x${height}");
-    notifyListeners();
-  } catch (e) {
-    logger.e("❌ 彻底切换失败: $e");
-    // 如果失败了，建议提示用户重启摄像头
-  }
-}
-
-// 动态调整指定连接的发送画质 (修改编码参数)
-Future<void> adjustSendQuality(String peerId, {double scaleDownBy = 1.0, int? maxBitrate}) async {
-  final pc = _peerConnections[peerId];
-  if (pc == null) return;
-
-  try {
-    // 找到视频发送器
-    final senders = await pc.getSenders();
-    final videoSender = senders.firstWhere((s) => s.track?.kind == 'video');
-
-    // 获取当前参数
-    final parameters = videoSender.parameters;
-    
-    // 修改编码参数
-    if (parameters.encodings != null && parameters.encodings!.isNotEmpty) {
-      // scaleDownBy: 1.0 表示不缩放，2.0 表示长宽各缩小一倍
-      parameters.encodings![0].scaleResolutionDownBy = scaleDownBy;
       
-      // maxBitrate: 最大码率 (bps)，例如 1000000 = 1Mbps
-      if (maxBitrate != null) {
-        parameters.encodings![0].maxBitrate = maxBitrate;
+      if (videoSender == null) return;
+      
+      final params = videoSender.parameters;
+      if (params.encodings?.isNotEmpty ?? false) {
+        params.encodings![0].scaleResolutionDownBy = scaleDownBy;
+        if (maxBitrate != null) {
+          params.encodings![0].maxBitrate = maxBitrate;
+        }
+        await videoSender.setParameters(params);
+        
+        logger.i('📊 发送画质调整 (给 $peerId): 缩放=$scaleDownBy, 码率=$maxBitrate');
       }
-
-      // 应用新参数
-      await videoSender.setParameters(parameters);
-      logger.i("发送画质已调整 (给 $peerId): 缩放=$scaleDownBy, 码率=$maxBitrate");
-    }
-  } catch (e) {
-    logger.e("调整发送画质失败: $e");
-  }
-}
-
-  Future<webrtc.RTCPeerConnection> createPeerConnection(String peerId) async {
-    if (_peerConnections.containsKey(peerId)) {
-      return _peerConnections[peerId]!; // 已经存在连接
-    }
-
-    final config = <String, dynamic>{
-      'iceServers': [
-        {'urls': 'stun:stun.l.google.com:19302'},
-      ],
-    };
-
-    final pc = await webrtc.createPeerConnection(config);
-
-
-    pc.onIceCandidate = (candidate) {
-    // candidate 包含了具体的 IP、端口和协议类型等信息，必须发送给对方才能建立连接
-    ws.send(jsonEncode({
-      'type': 'candidate',
-      'from': _selfId,
-      'to': peerId,
-      'candidate': candidate.toMap(), // 必须转成 Map 才能发 JSON
-    }));
-  };
-
-  pc.onTrack = (event) async {
-    logger.i('收到远端轨道: ${event.track.kind}'); // 加上这句日志，定位起来非常直观
-
-    if (!_remoteRenderers.containsKey(peerId)) {
-      final renderer = webrtc.RTCVideoRenderer();
-      await renderer.initialize();
-      _remoteRenderers[peerId] = renderer;
-    }
-
-    final renderer = _remoteRenderers[peerId]!;
-
-    // 不要限制 srcObject == null，每次收到新 track 都需要处理
-    if (event.streams.isNotEmpty) {
-      renderer.srcObject = event.streams.first;
-    } else {
-      if (renderer.srcObject == null) {
-        final remoteStream = await webrtc.createLocalMediaStream('remote_$peerId');
-        renderer.srcObject = remoteStream;
-      }
-      renderer.srcObject!.addTrack(event.track);
-    }
-
-    // 必须通知 UI 刷新，否则画面出不来
-    Future.microtask(() => notifyListeners());
-  };
-
-    if (_localStream != null) {
-      for (var track in _localStream!.getTracks()) {
-        pc.addTrack(track, _localStream!);
-      }
-    }
-
-    // notifyListeners(); // 通知 UI 更新
-    _peerConnections[peerId] = pc;
-    return pc;
-  }
-
-  Future<void> _makeCall(String peerId) async {
-    final pc = await createPeerConnection(peerId);
-
-    final offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    ws.send(JsonEncoder().convert({
-      'type': 'offer',
-      'from': _selfId,
-      'to': peerId,
-      'sdp': offer.sdp,
-    }));
-  }
-
-  Future<void> handleCandidate(String peerId, Map<String, dynamic> candidateMap) async {
-    final pc = _peerConnections[peerId];
-    final candidate = webrtc.RTCIceCandidate(
-      candidateMap['candidate'],
-      candidateMap['sdpMid'],
-      candidateMap['sdpMLineIndex'],
-    );
-    
-
-    if(pc != null && await pc.getRemoteDescription() != null) {
-      await pc.addCandidate(candidate);
-    } else {
-      // 连接还未建立，先缓存 ICE 候选，等连接建立后再添加
-      _iceCandidatesBuffer.putIfAbsent(peerId, () => []).add(candidate);
+    } catch (e) {
+      logger.e('调整发送画质失败: $e');
     }
   }
   
-
-  Future<void> handleOffer(String peerId, String sdp) async {
-    final pc = await createPeerConnection(peerId);
-
-    await pc.setRemoteDescription(webrtc.RTCSessionDescription(sdp, 'offer'));
-
-    await _processBufferedCandidates(peerId);
-
-    final answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    ws.send(JsonEncoder().convert({
-      'type': 'answer',
-      'from': _selfId,
-      'to': peerId,
-      'sdp': answer.sdp,
-    }));
+  /// 获取远端参会者的视频状态
+  bool isRemoteVideoOn(String peerId) {
+    return _remotePeers[peerId]?.isVideoOn ?? false;
   }
-
-  Future<void> handleAnswer(String peerId, String sdp) async {
-    final pc = await createPeerConnection(peerId);
-    await pc.setRemoteDescription(webrtc.RTCSessionDescription(sdp, 'answer'));
-    await _processBufferedCandidates(peerId);
+  
+  /// 获取远端参会者的音频状态
+  bool isRemoteAudioOn(String peerId) {
+    return _remotePeers[peerId]?.isAudioOn ?? false;
   }
-
-  Future<void> handleLeave(String peerId) async {
-    // 1. 关闭连接
-    _peerConnections[peerId]?.close();
-    _peerConnections.remove(peerId);
-
-    // 2. 销毁渲染器
-    final renderer = _remoteRenderers.remove(peerId);
-    if (renderer != null) {
-      renderer.srcObject = null;
-      await renderer.dispose();
+  
+  // ==================== 私有方法：本地媒体管理 ====================
+  
+  Future<void> _initializeLocalMedia() async {
+    // 初始化渲染器
+    if (_localRenderer.textureId == null) {
+      await _localRenderer.initialize();
     }
-
-    _iceCandidatesBuffer.remove(peerId);
-
-    // 3. 通知 UI 刷新，减少画面坑位！
+    
+    // 清理旧流
+    await _cleanupLocalMedia();
+    
+    try {
+      // 获取新流
+      _localStream = await webrtc.navigator.mediaDevices.getUserMedia({
+        'audio': true,
+        'video': _defaultVideoConstraints,
+      });
+      
+      // 安全地设置轨道状态（默认关闭，等用户手动开启）
+      final audioTracks = _localStream!.getAudioTracks();
+      final videoTracks = _localStream!.getVideoTracks();
+      
+      if (audioTracks.isNotEmpty) {
+        audioTracks.first.enabled = false;
+        _isMicrophoneOn = false;
+      }
+      
+      if (videoTracks.isNotEmpty) {
+        videoTracks.first.enabled = false;
+        _isCameraOn = false;
+      }
+      
+      _localRenderer.srcObject = _localStream;
+      logger.i('✅ 本地媒体初始化完成');
+      
+    } catch (e) {
+      logger.e('❌ 本地媒体初始化失败: $e');
+      rethrow;
+    }
+  }
+  
+  Future<void> _cleanupLocalMedia() async {
+    if (_localStream != null) {
+      for (final track in _localStream!.getTracks()) {
+        track.stop();
+      }
+      await _localStream!.dispose();
+      _localStream = null;
+    }
+    
+    _localRenderer.srcObject = null;
+    _isCameraOn = false;
+    _isMicrophoneOn = false;
+  }
+  
+  // ==================== 私有方法：远端 Peer 管理 ====================
+  
+  Future<RemotePeer> _getOrCreateRemotePeer(String peerId) async {
+    if (_remotePeers.containsKey(peerId)) {
+      return _remotePeers[peerId]!;
+    }
+    
+    final peer = RemotePeer(id: peerId, name: peerId);
+    
+    // 初始化渲染器
+    final renderer = webrtc.RTCVideoRenderer();
+    await renderer.initialize();
+    peer.renderer = renderer;
+    
+    _remotePeers[peerId] = peer;
+    notifyListeners();
+    
+    return peer;
+  }
+  
+  Future<void> _createPeerConnection(RemotePeer peer) async {
+    if (peer.connection != null) return;
+    
+    peer.state = PeerConnectionState.connecting;
+    
+    final pc = await webrtc.createPeerConnection(_iceServers);
+    peer.connection = pc;
+    
+    // ICE 候选处理
+    pc.onIceCandidate = (candidate) {
+      _sendSignalingMessage({
+        'type': 'candidate',
+        'from': _selfId,
+        'to': peer.id,
+        'candidate': candidate.toMap(),
+      });
+    };
+    
+    // 轨道接收处理
+    pc.onTrack = (event) async {
+      logger.i('📥 收到远端轨道 [${peer.id}]: ${event.track.kind}');
+      
+      if (event.streams.isNotEmpty) {
+        peer.renderer?.srcObject = event.streams.first;
+      }
+      
+      notifyListeners();
+    };
+    
+    // 连接状态监听
+    pc.onConnectionState = (state) {
+      logger.i('🔗 连接状态 [${peer.id}]: $state');
+      switch (state) {
+        case webrtc.RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+          peer.state = PeerConnectionState.connected;
+          break;
+        case webrtc.RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+          peer.state = PeerConnectionState.disconnected;
+          break;
+        case webrtc.RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+          peer.state = PeerConnectionState.failed;
+          break;
+        default:
+          break;
+      }
+      notifyListeners();
+    };
+    
+    // 添加本地轨道
+    if (_localStream != null) {
+      for (final track in _localStream!.getTracks()) {
+        await pc.addTrack(track, _localStream!);
+      }
+    }
+  }
+  
+  Future<void> _removeRemotePeer(String peerId) async {
+    final peer = _remotePeers.remove(peerId);
+    if (peer != null) {
+      peer.dispose();
+      logger.i('👋 移除远端用户: $peerId');
+      notifyListeners();
+    }
+  }
+  
+  Future<void> _cleanupAllRemotePeers() async {
+    for (final peer in _remotePeers.values) {
+      peer.dispose();
+    }
+    _remotePeers.clear();
+  }
+  
+  Future<void> _replaceTrackOnAllConnections(webrtc.MediaStreamTrack newTrack) async {
+    for (final peer in _remotePeers.values) {
+      if (peer.connection == null) continue;
+      
+      try {
+        final senders = await peer.connection!.getSenders();
+        final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+          (s) => s?.track?.kind == 'video',
+          orElse: () => null,
+        );
+        
+        if (videoSender != null) {
+          await videoSender.replaceTrack(newTrack);
+        }
+      } catch (e) {
+        logger.w('替换轨道失败 [${peer.id}]: $e');
+      }
+    }
+  }
+  
+  // ==================== 私有方法：信令处理 ====================
+  
+  void _handleSignalingMessage(String message) {
+    try {
+      final data = jsonDecode(message) as Map<String, dynamic>;
+      final type = data['type'] as String?;
+      final fromId = (data['from'] ?? data['session_id'])?.toString();
+      
+      logger.d('📨 收到信令: $type from: $fromId');
+      
+      switch (type) {
+        case 'register_success':
+          logger.i('✅ 服务器注册成功');
+          break;
+          
+        case 'user_joined':
+          if (fromId != null && fromId != _selfId) {
+            _handleUserJoined(fromId);
+          }
+          break;
+          
+        case 'media_state':
+          if (fromId != null) {
+            _handleMediaState(fromId, data);
+          }
+          break;
+          
+        case 'offer':
+          if (fromId != null) {
+            _handleOffer(fromId, data['sdp']);
+          }
+          break;
+          
+        case 'answer':
+          if (fromId != null) {
+            _handleAnswer(fromId, data['sdp']);
+          }
+          break;
+          
+        case 'candidate':
+          if (fromId != null) {
+            _handleCandidate(fromId, data['candidate']);
+          }
+          break;
+          
+        case 'leave':
+          if (fromId != null) {
+            _removeRemotePeer(fromId);
+          }
+          break;
+          
+        case 'error':
+          logger.e('服务器错误: ${data['message']}');
+          _updateMeetingState(errorMessage: data['message']);
+          break;
+          
+        default:
+          logger.w('未知信令类型: $type');
+      }
+      
+      notifyListeners();
+      
+    } catch (e) {
+      logger.e('处理信令消息失败: $e');
+    }
+  }
+  
+  Future<void> _handleUserJoined(String peerId) async {
+    logger.i('👤 新用户加入: $peerId');
+    await _initiateCall(peerId);
+  }
+  
+  Future<void> _handleMediaState(String peerId, Map<String, dynamic> data) async {
+    final peer = _remotePeers[peerId];
+    if (peer == null) return;
+    
+    peer.isVideoOn = data['videoOn'] ?? false;
+    peer.isAudioOn = data['audioOn'] ?? false;
+    
+    logger.i('📢 媒体状态更新 [$peerId]: 视频=${peer.isVideoOn}, 音频=${peer.isAudioOn}');
+  }
+  
+  Future<void> _initiateCall(String peerId) async {
+    try {
+      final peer = await _getOrCreateRemotePeer(peerId);
+      await _createPeerConnection(peer);
+      
+      final offer = await peer.connection!.createOffer();
+      await peer.connection!.setLocalDescription(offer);
+      
+      _sendSignalingMessage({
+        'type': 'offer',
+        'from': _selfId,
+        'to': peerId,
+        'sdp': offer.sdp,
+      });
+      
+      logger.i('📤 发送 Offer 给: $peerId');
+      
+    } catch (e) {
+      logger.e('发起呼叫失败: $e');
+    }
+  }
+  
+  Future<void> _handleOffer(String peerId, String sdp) async {
+    try {
+      final peer = await _getOrCreateRemotePeer(peerId);
+      await _createPeerConnection(peer);
+      
+      await peer.connection!.setRemoteDescription(
+        webrtc.RTCSessionDescription(sdp, 'offer'),
+      );
+      
+      // 处理缓冲的 ICE 候选
+      await _processBufferedCandidates(peer);
+      
+      final answer = await peer.connection!.createAnswer();
+      await peer.connection!.setLocalDescription(answer);
+      
+      _sendSignalingMessage({
+        'type': 'answer',
+        'from': _selfId,
+        'to': peerId,
+        'sdp': answer.sdp,
+      });
+      
+      logger.i('📤 发送 Answer 给: $peerId');
+      
+    } catch (e) {
+      logger.e('处理 Offer 失败: $e');
+    }
+  }
+  
+  Future<void> _handleAnswer(String peerId, String sdp) async {
+    try {
+      final peer = _remotePeers[peerId];
+      if (peer?.connection == null) return;
+      
+      await peer!.connection!.setRemoteDescription(
+        webrtc.RTCSessionDescription(sdp, 'answer'),
+      );
+      
+      await _processBufferedCandidates(peer);
+      
+      logger.i('✅ Answer 处理完成: $peerId');
+      
+    } catch (e) {
+      logger.e('处理 Answer 失败: $e');
+    }
+  }
+  
+  Future<void> _handleCandidate(String peerId, Map<String, dynamic> candidateMap) async {
+    try {
+      final peer = _remotePeers[peerId];
+      final candidate = webrtc.RTCIceCandidate(
+        candidateMap['candidate'],
+        candidateMap['sdpMid'],
+        candidateMap['sdpMLineIndex'],
+      );
+      
+      // 如果连接还没建立，先缓冲
+      if (peer?.connection == null || await peer!.connection!.getRemoteDescription() == null) {
+        peer!.iceBuffer.add(candidate);
+        logger.d('⏳ 缓冲 ICE 候选: $peerId');
+        return;
+      }
+      
+      await peer.connection!.addCandidate(candidate);
+      logger.d('✅ 添加 ICE 候选: $peerId');
+      
+    } catch (e) {
+      logger.e('处理 ICE 候选失败: $e');
+    }
+  }
+  
+  Future<void> _processBufferedCandidates(RemotePeer peer) async {
+    if (peer.connection == null || peer.iceBuffer.isEmpty) return;
+    
+    for (final candidate in peer.iceBuffer) {
+      try {
+        await peer.connection!.addCandidate(candidate);
+      } catch (e) {
+        logger.w('添加缓冲 ICE 候选失败: $e');
+      }
+    }
+    
+    peer.iceBuffer.clear();
+    logger.i('🔄 处理缓冲 ICE 候选完成: ${peer.id}');
+  }
+  
+  void _broadcastMediaState() {
+    _sendSignalingMessage({
+      'type': 'media_state',
+      'from': _selfId,
+      'videoOn': _isCameraOn,
+      'audioOn': _isMicrophoneOn,
+    });
+  }
+  
+  void _sendSignalingMessage(Map<String, dynamic> data) {
+    _ws.send(jsonEncode(data));
+  }
+  
+  void _updateMeetingState({
+    bool? isInRoom,
+    String? currentRoomId,
+    bool? isSignalingConnected,
+    String? errorMessage,
+  }) {
+    _meetingState = _meetingState.copyWith(
+      isInRoom: isInRoom,
+      currentRoomId: currentRoomId,
+      isSignalingConnected: isSignalingConnected,
+      errorMessage: errorMessage,
+    );
     notifyListeners();
   }
-
-  Future<void> _processBufferedCandidates(String peerId) async {
-    final pc = _peerConnections[peerId];
-    if (pc == null) return;
-
-    final candidates = _iceCandidatesBuffer[peerId] ?? [];
-    for (var candidate in candidates) {
-      await pc.addCandidate(candidate);
+  
+  void _ensureSignalingReady() {
+    if (!_meetingState.isSignalingConnected) {
+      throw StateError('信令未初始化，请先调用 initializeSignaling()');
     }
-    _iceCandidatesBuffer.remove(peerId); // 处理完后清空缓存
   }
-
-
+  
   @override
   void dispose() {
     _wsSubscription?.cancel();
+    _cleanupAllRemotePeers();
+    _cleanupLocalMedia();
     _localRenderer.dispose();
-    _peerConnections.values.forEach((pc) => pc.close());
-    _remoteRenderers.values.forEach((renderer) => renderer.dispose());
     super.dispose();
   }
-
-  
 }
