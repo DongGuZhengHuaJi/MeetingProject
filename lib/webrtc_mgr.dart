@@ -21,15 +21,20 @@ class WebRTCManager extends ChangeNotifier {
 
   final webrtc.RTCVideoRenderer _localRenderer = webrtc.RTCVideoRenderer();
   webrtc.MediaStream? _localStream;
+  bool _isMicOn = false;
+  bool _isCamOn = false;
+  static const Map<String, int> kHDConstraints = {'width': 1280, 'height': 720};
 
   final Map<String, webrtc.RTCPeerConnection> _peerConnections = {};
   final Map<String, webrtc.RTCVideoRenderer> _remoteRenderers = {};
+  Map<String, bool> remoteVideoStates = {};
   final Map<String, List<webrtc.RTCIceCandidate>> _iceCandidatesBuffer = {};
 
   Map<String, webrtc.RTCVideoRenderer> get remoteRenderers => _remoteRenderers;
   webrtc.RTCVideoRenderer get localRenderer => _localRenderer;
   String get selfId => _selfId;
-
+  bool get isMicOn => _isMicOn;
+  bool get isCamOn => _isCamOn;
 
 
   Future<void> initSignaling(String selfId, String signalingUrl) async {
@@ -66,6 +71,13 @@ class WebRTCManager extends ChangeNotifier {
         if (fromId != null && fromId != _selfId) {
           logger.i('发现新人 $fromId，发起呼叫');
           _makeCall(fromId); 
+          remoteVideoStates[fromId] = false; // 默认远端视频状态为关闭，等对方更新状态后再刷新 UI
+        }
+        break;
+      case 'media_state':
+        if (fromId != null) {
+          remoteVideoStates[fromId] = data['videoOn'] ?? false;
+          // 这里可以扩展处理音频状态 data['audioOn']
         }
         break;
       case 'offer':
@@ -89,12 +101,42 @@ class WebRTCManager extends ChangeNotifier {
   }
 
   Future<void> startMeeting({required String roomId, bool isCreate = false}) async {
-    // 1. 初始化本地摄像头和麦克风
-    await _localRenderer.initialize();
-    _localStream = await webrtc.navigator.mediaDevices.getUserMedia({
-      'audio': true,
-      'video': {'facingMode': 'user'},
-    });
+    // 1. 初始化本地流和渲染器
+    if (_localRenderer.textureId == null) {
+      await _localRenderer.initialize();
+    }
+    
+    // 确保旧流已经被彻底清理 (防御性编程)
+    if (_localStream != null) {
+      _localStream!.getTracks().forEach((track) => track.stop());
+      _localStream!.dispose();
+    }
+
+
+    try {
+      _localStream = await webrtc.navigator.mediaDevices.getUserMedia({
+        'audio': true,
+        'video': {
+          'facingMode': 'user',
+          'width': {'ideal': 1280}, // 只用 ideal，不要用 min
+          'height': {'ideal': 720},
+        },
+      });
+      
+      // 【关键检查】：确保把流赋给了 renderer
+      _localRenderer.srcObject = _localStream;
+      _isCamOn = true; // 默认开启视频
+      notifyListeners();
+    } catch (e) {
+      print("摄像头启动失败: $e"); // 如果还有问题，控制台会打印这里
+    }
+  
+
+    _localStream!.getAudioTracks()[0].enabled = false;
+    _localStream!.getVideoTracks()[0].enabled = false;
+    _isCamOn = false;
+    _isMicOn = false;
+
     _localRenderer.srcObject = _localStream;
     notifyListeners();
 
@@ -105,6 +147,7 @@ class WebRTCManager extends ChangeNotifier {
       'room': roomId,
     }));
   }
+  
 
   Future<void> leaveCurrentRoom() async {
     // 1. 告诉服务器我要退房了
@@ -116,27 +159,143 @@ class WebRTCManager extends ChangeNotifier {
     // 2. 清理所有连线和远程渲染器
     for (final pc in _peerConnections.values) { await pc.close(); }
     _peerConnections.clear();
-    for (final renderer in _remoteRenderers.values) { await renderer.dispose(); }
+    for (final renderer in _remoteRenderers.values) { 
+      renderer.srcObject = null; // 先置空
+      await renderer.dispose(); 
+    }
     _remoteRenderers.clear();
     
-    // 3. 关闭本地摄像头！但不关闭 WebSocket
-    _localStream?.getTracks().forEach((track) => track.stop());
-    _localStream?.dispose();
-    _localStream = null;
+    // 3. 【核心修复 3】彻底关闭本地摄像头和麦克风硬件
+    if (_localStream != null) {
+      for (var track in _localStream!.getTracks()) {
+        track.stop(); // 停止硬件轨道
+      }
+      _localStream!.dispose(); // 释放流内存
+      _localStream = null;
+    }
+    
     _localRenderer.srcObject = null;
 
     notifyListeners();
   }
 
+void toggleAudio() {
+  _isMicOn = !_isMicOn;
+  _localStream?.getAudioTracks().forEach((track) => track.enabled = _isMicOn);
 
-void toggleAudio(bool isEnabled) {
-  _localStream?.getAudioTracks().forEach((track) => track.enabled = isEnabled);
   notifyListeners();
 }
 
-void toggleVideo(bool isEnabled) {
-  _localStream?.getVideoTracks().forEach((track) => track.enabled = isEnabled);
+void toggleVideo() {
+  _isCamOn = !_isCamOn;
+  _localStream?.getVideoTracks().forEach((track) {
+    track.enabled = _isCamOn;
+  });
+  
+  // 【关键】广播自己的状态给房间其他人
+  ws.send(jsonEncode({
+    'type': 'media_state',
+    'from': _selfId,
+    'videoOn': _isCamOn,
+    'audioOn': _isMicOn,
+  }));
+  
   notifyListeners();
+}
+
+// 动态调整本地摄像头分辨率
+// webrtc_mgr.dart
+
+Future<void> changeCameraQuality({required int width, required int height}) async {
+  if (_localStream == null) return;
+
+  try {
+    // 1. 先准备好新分辨率的轨道，确保硬件能正常响应
+    webrtc.MediaStream newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+      'audio': false, // 切换分辨率不需要重新获取音频
+      'video': {
+        'facingMode': 'user',
+        'width': {'ideal': width},
+        'height': {'ideal': height},
+      },
+    });
+    var newTrack = newStream.getVideoTracks().first;
+    newTrack.enabled = _isCamOn; // 继承当前的开关状态
+
+    // 2. 找到旧轨道
+    final videoTracks = _localStream!.getVideoTracks();
+    if (videoTracks.isNotEmpty) {
+      var oldTrack = videoTracks.first;
+
+      // 3. 【核心修复】先从流中移除，再停止硬件。并包裹 try-catch 防止崩溃
+      try {
+        await _localStream!.removeTrack(oldTrack);
+      } catch (e) {
+        logger.w("移除旧轨道时发生非致命错误: $e");
+      }
+      await oldTrack.stop(); // 彻底关闭旧硬件占用
+    }
+
+    // 4. 将新轨道加入本地流对象
+    await _localStream!.addTrack(newTrack);
+
+    // 5. 【关键】强制刷新本地渲染器
+    // 必须先置空再重新赋值，否则 Flutter 的 Texture 可能会卡在最后一帧
+    _localRenderer.srcObject = null;
+    _localRenderer.srcObject = _localStream;
+
+    // 6. 同步给所有远端用户
+    for (var pc in _peerConnections.values) {
+      final senders = await pc.getSenders();
+      final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+        (s) => s?.track?.kind == 'video',
+        orElse: () => null,
+      );
+
+      if (videoSender != null) {
+        // replaceTrack 是 WebRTC 提供的无缝替换技术
+        await videoSender.replaceTrack(newTrack);
+      }
+    }
+
+    logger.i("✅ 成功无缝切换分辨率至: ${width}x${height}");
+    notifyListeners();
+  } catch (e) {
+    logger.e("❌ 彻底切换失败: $e");
+    // 如果失败了，建议提示用户重启摄像头
+  }
+}
+
+// 动态调整指定连接的发送画质 (修改编码参数)
+Future<void> adjustSendQuality(String peerId, {double scaleDownBy = 1.0, int? maxBitrate}) async {
+  final pc = _peerConnections[peerId];
+  if (pc == null) return;
+
+  try {
+    // 找到视频发送器
+    final senders = await pc.getSenders();
+    final videoSender = senders.firstWhere((s) => s.track?.kind == 'video');
+
+    // 获取当前参数
+    final parameters = videoSender.parameters;
+    
+    // 修改编码参数
+    if (parameters.encodings != null && parameters.encodings!.isNotEmpty) {
+      // scaleDownBy: 1.0 表示不缩放，2.0 表示长宽各缩小一倍
+      parameters.encodings![0].scaleResolutionDownBy = scaleDownBy;
+      
+      // maxBitrate: 最大码率 (bps)，例如 1000000 = 1Mbps
+      if (maxBitrate != null) {
+        parameters.encodings![0].maxBitrate = maxBitrate;
+      }
+
+      // 应用新参数
+      await videoSender.setParameters(parameters);
+      logger.i("发送画质已调整 (给 $peerId): 缩放=$scaleDownBy, 码率=$maxBitrate");
+    }
+  } catch (e) {
+    logger.e("调整发送画质失败: $e");
+  }
 }
 
   Future<webrtc.RTCPeerConnection> createPeerConnection(String peerId) async {
