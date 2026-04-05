@@ -317,10 +317,10 @@ class _MeetingPageState extends State<MeetingPage> {
             onTap: _manager.toggleCamera,
           ),
           _buildToolButton(
-            icon: Icons.screen_share_outlined,
+            icon: _manager.isScreenSharing ? Icons.screen_share : Icons.screen_share_outlined,
             label: '共享屏幕',
-            color: Colors.black87,
-            onTap: () {}, // TODO: 屏幕共享
+            color: _manager.isScreenSharing ? Colors.black87 : Colors.red,
+            onTap: _manager.toggleScreenSharing,
           ),
           _buildToolButton(
             icon: Icons.group_outlined,

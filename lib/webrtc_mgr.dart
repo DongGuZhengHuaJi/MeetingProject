@@ -28,8 +28,11 @@ class WebRTCManager extends ChangeNotifier {
   String _selfId = '';
   final webrtc.RTCVideoRenderer _localRenderer = webrtc.RTCVideoRenderer();
   webrtc.MediaStream? _localStream;
+  webrtc.MediaStream? _screenStream;  // 屏幕流
+  webrtc.MediaStream? _cameraStream;
   bool _isCameraOn = false;
   bool _isMicrophoneOn = false;
+  bool _isScreenSharing = false;
   
   // ==================== 会议状态 ====================
   MeetingState _meetingState = const MeetingState();
@@ -55,6 +58,7 @@ class WebRTCManager extends ChangeNotifier {
   bool get isCameraOn => _isCameraOn;
   bool get isMicrophoneOn => _isMicrophoneOn;
   MeetingState get meetingState => _meetingState;
+  bool get isScreenSharing => _isScreenSharing;
   
   /// 获取所有远端参会者（不可修改的视图）
   Map<String, RemotePeer> get remotePeers => Map.unmodifiable(_remotePeers);
@@ -312,6 +316,20 @@ class WebRTCManager extends ChangeNotifier {
   bool isRemoteAudioOn(String peerId) {
     return _remotePeers[peerId]?.isAudioOn ?? false;
   }
+
+  Future<void> toggleScreenSharing() async {
+    if (_isScreenSharing) {
+      // 停止屏幕共享
+      await _stopScreenSharing();
+    } else {
+      if(_isCameraOn){
+        // 如果摄像头正在开启，先关闭它
+        await toggleCamera();
+      }
+      // 开始屏幕共享
+      await _startScreenSharing();
+    }
+  }
   
   // ==================== 私有方法：本地媒体管理 ====================
   
@@ -368,6 +386,61 @@ class WebRTCManager extends ChangeNotifier {
     _isMicrophoneOn = false;
   }
   
+  Future<void> _startScreenSharing() async {
+    if(_isScreenSharing) return;
+
+    try{
+
+      if (webrtc.WebRTC.platformIsAndroid || webrtc.WebRTC.platformIsIOS) {
+        // 移动端：提示用户暂不支持，或引导使用"文件选择"分享图片
+        throw Exception('移动端屏幕共享需要额外配置，请先使用桌面端测试');
+      }
+    
+      _screenStream = await webrtc.navigator.mediaDevices.getDisplayMedia({
+        'video': true,
+        'audio': true,
+      });
+
+      _cameraStream = _localStream; // 备份当前摄像头流
+      _localStream = _screenStream; // 切换到屏幕流
+      _localRenderer.srcObject = _localStream;
+
+      await _replaceTrackOnAllConnections(_screenStream!.getVideoTracks().first);
+
+      _isScreenSharing = true;
+      notifyListeners();
+      logger.i('🖥️ 屏幕共享已开始');
+
+      _screenStream!.getVideoTracks().first.onEnded = () {
+        toggleScreenSharing();
+      };
+
+    }catch(e){
+      logger.e('屏幕共享失败: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> _stopScreenSharing() async {
+    if(!_isScreenSharing) return;
+
+    try{
+      await _screenStream?.dispose();
+      _screenStream = null;
+
+      if(_cameraStream != null){
+        _localStream = _cameraStream; // 切回摄像头流
+        _localRenderer.srcObject = _localStream;
+        await _replaceTrackOnAllConnections(_cameraStream!.getVideoTracks().first);
+      }
+
+      _isScreenSharing = false;
+      notifyListeners();
+      logger.i('🖥️ 屏幕共享已停止');
+    }catch(e){
+      logger.e('停止屏幕共享失败: $e');
+    }
+  }
   // ==================== 私有方法：远端 Peer 管理 ====================
   
   Future<RemotePeer> _getOrCreateRemotePeer(String peerId) async {
