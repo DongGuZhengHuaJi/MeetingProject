@@ -33,6 +33,10 @@ class WebRTCManager extends ChangeNotifier {
   bool _isCameraOn = false;
   bool _isMicrophoneOn = false;
   bool _isScreenSharing = false;
+  List<webrtc.MediaDeviceInfo> _cameraDevices = [];
+  List<webrtc.MediaDeviceInfo> _microphoneDevices = [];
+  String? _selectedCameraId;
+  String? _selectedMicrophoneId;
   
   // ==================== 会议状态 ====================
   MeetingState _meetingState = const MeetingState();
@@ -65,6 +69,12 @@ class WebRTCManager extends ChangeNotifier {
   
   /// 是否已在房间中
   bool get isInRoom => _meetingState.isInRoom;
+
+  //设备列表
+  List<webrtc.MediaDeviceInfo> get cameraDevices => List.unmodifiable(_cameraDevices);
+  List<webrtc.MediaDeviceInfo> get microphoneDevices => List.unmodifiable(_microphoneDevices);
+  String ? get selectedCameraId => _selectedCameraId;
+  String ? get selectedMicrophoneId => _selectedMicrophoneId;
   
   // ==================== 生命周期管理 ====================
   
@@ -146,7 +156,14 @@ class WebRTCManager extends ChangeNotifier {
       
       await _localRenderer.initialize();
 
+      await _loadMediaDevices();
+
+      _selectedCameraId = _cameraDevices.firstOrNull?.deviceId;
+      _selectedMicrophoneId = _microphoneDevices.firstOrNull?.deviceId;
+
       logger.i('🚪 已进入房间: $roomId');
+      logger.i('📱 可用设备 - 摄像头: ${_cameraDevices.length}, 麦克风: ${_microphoneDevices.length}');
+      logger.i('🎥 默认摄像头: ${_selectedCameraId ?? "无"}, 🎤 默认麦克风: ${_selectedMicrophoneId ?? "无"}');
       
     } catch (e) {
       logger.e('❌ 进入房间失败: $e');
@@ -174,6 +191,10 @@ class WebRTCManager extends ChangeNotifier {
     
     // 3. 清理本地媒体
     await _cleanupLocalMedia();
+    _cameraDevices.clear();
+    _microphoneDevices.clear();
+    _selectedCameraId = null;
+    _selectedMicrophoneId = null;
     
     _updateMeetingState(
       isInRoom: false,
@@ -185,56 +206,108 @@ class WebRTCManager extends ChangeNotifier {
   
   /// 切换麦克风状态
   Future<void> toggleMicrophone() async {
-    final audioTracks = _localStream?.getAudioTracks() ?? [];
-    if (audioTracks.isEmpty) {
-      logger.w('没有可用的音频轨道');
-      return;
-    }
-    
     final newState = !_isMicrophoneOn;
-    for (final track in audioTracks) {
-      track.enabled = newState;
+    final useDefaultMicrophone = _selectedMicrophoneId == null || _selectedMicrophoneId == 'default';
+
+    if (newState) {
+      try {
+        final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+          'audio': !useDefaultMicrophone
+              ? {'deviceId': {'exact': _selectedMicrophoneId}} 
+              : true,
+          'video': false,
+        });
+        
+        final newTrack = newStream.getAudioTracks().first;
+        
+        if (_localStream == null) {
+          _localStream = newStream;
+        } else {
+          final oldTracks = _localStream!.getAudioTracks().toList();
+          for (var track in oldTracks) {
+            try {
+              await _localStream!.removeTrack(track);
+            } catch (e) {
+              logger.d('忽略旧音频轨道移除报错');
+            }
+            track.stop();
+          }
+          await _localStream!.addTrack(newTrack);
+        }
+        
+        if (_meetingState.isInRoom) {
+          await _replaceTrackOnAllConnections(newTrack);
+        }
+        _isMicrophoneOn = true;
+      } catch (e) {
+        logger.e('开启麦克风失败: $e');
+        return;
+      }
+    } else {
+      await _cleanupLocalMicrophoneStream();
+      _isMicrophoneOn = false;
     }
-    
-    _isMicrophoneOn = newState;
+
     _broadcastMediaState();
     notifyListeners();
-    
-    logger.i('🎤 麦克风: ${_isMicrophoneOn ? "开启" : "关闭"}');
+    logger.i('🎤 麦克风: ${_selectedMicrophoneId ?? "无"} - ${_isMicrophoneOn ? "开启" : "关闭"}');
   }
-  
+
   /// 切换摄像头状态
   Future<void> toggleCamera() async {
-    if(_isScreenSharing){
-      logger.w('正在屏幕共享，无法切换摄像头');
+    if (_isScreenSharing) {
+      logger.w('正在屏幕共享，无法操作摄像头');
       return;
     }
 
-    if(_localStream == null) {
-      logger.w('本地媒体未初始化，正在初始化...');
-      await _initializeLocalMedia();
-    }
-
-    final videoTracks = _localStream?.getVideoTracks() ?? [];
-    if (videoTracks.isEmpty) {
-      logger.w('没有可用的视频轨道');
-      return;
-    }
-    
     final newState = !_isCameraOn;
-    for (final track in videoTracks) {
-      track.enabled = newState;
-    }
-    
-    _isCameraOn = newState;
-    _broadcastMediaState();
 
-    if(!_isCameraOn){
-      _cleanupLocalMedia();
+    if (newState) {
+      try {
+        final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+          'audio': false,
+          'video': _selectedCameraId != null 
+              ? {'deviceId': {'exact': _selectedCameraId}} 
+              : _defaultVideoConstraints['video'],
+        });
+        
+        final newTrack = newStream.getVideoTracks().first;
+        
+        if (_localStream == null) {
+          _localStream = newStream;
+        } else {
+          // 【核心修复】：使用 toList() 安全遍历，并隔离 removeTrack 的底层报错
+          final oldTracks = _localStream!.getVideoTracks().toList();
+          for (var track in oldTracks) {
+            try {
+              await _localStream!.removeTrack(track);
+            } catch (e) {
+              logger.d('忽略旧视频轨道移除报错');
+            }
+            track.stop();
+          }
+          await _localStream!.addTrack(newTrack);
+        }
+        
+        _localRenderer.srcObject = _localStream;
+        
+        if (_meetingState.isInRoom) {
+          await _replaceTrackOnAllConnections(newTrack);
+        }
+        _isCameraOn = true;
+      } catch (e) {
+        logger.e('开启摄像头失败: $e');
+        return;
+      }
+    } else {
+      await _cleanupLocalCameraStream();
+      _localRenderer.srcObject = null;
+      _isCameraOn = false;
     }
+
+    _broadcastMediaState();
     notifyListeners();
-    
-    logger.i('📹 摄像头: ${_isCameraOn ? "开启" : "关闭"}');
+    logger.i('📹 摄像头: ${_selectedCameraId ?? "无"} - ${_isCameraOn ? "开启" : "关闭"}');
   }
   
   /// 动态调整摄像头分辨率
@@ -346,6 +419,230 @@ class WebRTCManager extends ChangeNotifier {
       await _startScreenSharing();
     }
   }
+
+  // Future<void> switchCamera(String cameraId) async {
+  //   if(_selectedCameraId == cameraId) return; // 已选中，无需切换
+  //   _selectedCameraId = cameraId;
+
+  //   if(_isCameraOn && _localStream != null){
+  //     final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+  //       'audio': false,
+  //       'video': {
+  //         'deviceId': {'exact': cameraId},
+  //       },
+  //     });
+
+  //     final newVideoTracks = newStream.getVideoTracks();
+  //     if (newVideoTracks.isEmpty) {
+  //       throw Exception('无法切换摄像头: 未获取到视频轨道');
+  //     }
+
+  //     final newVideoTrack = newVideoTracks.first;
+  //     final oldVideoTracks = _localStream!.getVideoTracks();
+
+  //     for (final track in oldVideoTracks) {
+  //       try {
+  //         await _localStream!.removeTrack(track);
+  //       } catch (e) {
+  //         logger.w('移除旧摄像头轨道时发生非致命错误: $e');
+  //       }
+  //       await track.stop();
+  //     }
+
+  //     await _localStream!.addTrack(newVideoTrack);
+  //     _cameraStream = newStream;
+  //     _localRenderer.srcObject = _localStream;
+  //     await _replaceTrackOnAllConnections(newVideoTrack);
+  //     notifyListeners();
+  //   }
+  // }
+
+  // Future<void> switchMicrophone(String microphoneId) async {
+  //   if(_selectedMicrophoneId == microphoneId) return; // 已选中，无需切换
+  //   _selectedMicrophoneId = microphoneId;
+
+  //   if(_isMicrophoneOn && _localStream != null){
+  //     final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+  //       'audio': {
+  //         'deviceId': {'exact': microphoneId},
+  //       },
+  //       'video': false,
+  //     });
+
+  //     final newAudioTracks = newStream.getAudioTracks();
+  //     if (newAudioTracks.isEmpty) {
+  //       throw Exception('无法切换麦克风: 未获取到音频轨道');
+  //     }
+
+  //     final newAudioTrack = newAudioTracks.first;
+  //     final oldAudioTracks = _localStream!.getAudioTracks();
+
+  //     for (final track in oldAudioTracks) {
+  //       try {
+  //         await _localStream!.removeTrack(track);
+  //       } catch (e) {
+  //         logger.w('移除旧麦克风轨道时发生非致命错误: $e');
+  //       }
+  //       await track.stop();
+  //     }
+
+  //     await _localStream!.addTrack(newAudioTrack);
+  //     notifyListeners();
+  //   }
+  // }
+
+  /// 切换指定摄像头设备
+  Future<void> switchCamera(String cameraId) async {
+    if (_selectedCameraId == cameraId) {
+      logger.d('已选中摄像头 $cameraId，无需切换');
+      return;
+    }
+    _selectedCameraId = cameraId; // 无论是否开启，先记录用户偏好
+
+    // 如果当前没开视频，或者正在屏幕共享，只记录ID不执行真实硬件切换
+    if (!_isCameraOn || _isScreenSharing) return;
+
+    try {
+      final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+        'audio': false,
+        'video': {'deviceId': {'exact': cameraId}},
+      });
+
+      final newVideoTracks = newStream.getVideoTracks();
+      if (newVideoTracks.isEmpty) throw Exception('未获取到视频轨道');
+      final newVideoTrack = newVideoTracks.first;
+
+      // 剔除旧轨道并释放
+      final oldVideoTracks = _localStream?.getVideoTracks() ?? [];
+      for (final track in oldVideoTracks) {
+        try {
+          await _localStream!.removeTrack(track);
+        } catch (_) {}
+        track.stop();
+      }
+
+      await _localStream!.addTrack(newVideoTrack);
+      _cameraStream = newStream;
+      _localRenderer.srcObject = _localStream;
+      
+      // 同步给所有人
+      await _replaceTrackOnAllConnections(newVideoTrack);
+      notifyListeners();
+      
+      logger.i('📹 已切换至摄像头: $cameraId');
+    } catch (e) {
+      logger.e('切换摄像头硬件失败: $e');
+    }
+  }
+
+  /// 切换指定麦克风设备
+  Future<void> switchMicrophone(String microphoneId) async {
+    if (_selectedMicrophoneId == microphoneId) {
+      logger.d('已选中麦克风 $microphoneId，无需切换');
+      return;
+    }
+    _selectedMicrophoneId = microphoneId;
+
+    // 如果处于静音状态，只记录ID即可
+    if (!_isMicrophoneOn) return;
+
+    try {
+      final useDefaultMicrophone = microphoneId == 'default';
+      final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
+        'audio': useDefaultMicrophone
+            ? true
+            : {'deviceId': {'exact': microphoneId}},
+        'video': false,
+      });
+
+      final newAudioTracks = newStream.getAudioTracks();
+      if (newAudioTracks.isEmpty) throw Exception('未获取到音频轨道');
+      final newAudioTrack = newAudioTracks.first;
+
+      final oldAudioTracks = _localStream?.getAudioTracks() ?? [];
+      for (final track in oldAudioTracks) {
+        try {
+          await _localStream!.removeTrack(track);
+        } catch (_) {}
+        track.stop();
+      }
+
+      await _localStream!.addTrack(newAudioTrack);
+      
+      await _replaceTrackOnAllConnections(newAudioTrack);
+      notifyListeners();
+      
+      logger.i('🎤 已切换至麦克风: $microphoneId');
+    } catch (e) {
+      logger.e('切换麦克风硬件失败: $e');
+    }
+  }
+
+  Future<void> loadDevices() async {
+    await _loadMediaDevices();
+  }
+
+  /// 探测麦克风是否可用。
+  ///
+  /// [deviceId] 传入具体设备时会尝试按设备打开；为空或 default 时使用系统默认输入。
+  Future<bool> probeMicrophoneAvailability({String? deviceId}) async {
+    webrtc.MediaStream? probeStream;
+
+    try {
+      final useDefaultInput = deviceId == null || deviceId.isEmpty || deviceId == 'default';
+      probeStream = await webrtc.navigator.mediaDevices.getUserMedia({
+        'audio': useDefaultInput
+            ? true
+            : {'deviceId': {'exact': deviceId}},
+        'video': false,
+      });
+
+      return probeStream.getAudioTracks().isNotEmpty;
+    } catch (e) {
+      logger.w('麦克风探测失败: $e');
+      return false;
+    } finally {
+      if (probeStream != null) {
+        for (final track in probeStream.getTracks()) {
+          track.stop();
+        }
+        await probeStream.dispose();
+      }
+    }
+  }
+
+  /// 入会前预热设备权限并刷新设备列表。
+  ///
+  /// 仅当对应开关为 true 时才触发 getUserMedia，避免无感授权弹窗。
+  Future<void> prepareDevicesForJoin({
+    bool requestMicPermission = false,
+    bool requestCameraPermission = false,
+  }) async {
+    webrtc.MediaStream? probeStream;
+
+    try {
+      if (requestMicPermission || requestCameraPermission) {
+        probeStream = await webrtc.navigator.mediaDevices.getUserMedia({
+          'audio': requestMicPermission,
+          'video': requestCameraPermission ? _defaultVideoConstraints : false,
+        });
+      }
+    } catch (e) {
+      logger.w('媒体权限预热失败: $e');
+    } finally {
+      await _loadMediaDevices();
+      _selectedCameraId ??= _cameraDevices.firstOrNull?.deviceId;
+      _selectedMicrophoneId ??= _microphoneDevices.firstOrNull?.deviceId;
+      notifyListeners();
+
+      if (probeStream != null) {
+        for (final track in probeStream.getTracks()) {
+          track.stop();
+        }
+        await probeStream.dispose();
+      }
+    }
+  }
   
   // ==================== 私有方法：本地媒体管理 ====================
   
@@ -387,6 +684,20 @@ class WebRTCManager extends ChangeNotifier {
       rethrow;
     }
   }
+
+  Future<void> _loadMediaDevices() async {
+    try {
+      final devices = await webrtc.navigator.mediaDevices.enumerateDevices();
+      _cameraDevices = devices.where((d) => d.kind == 'videoinput' && d.deviceId.isNotEmpty).toList();
+      _microphoneDevices = devices.where((d) => d.kind == 'audioinput' && d.deviceId.isNotEmpty).toList();
+      
+      logger.i('📱 设备列表更新: ${_cameraDevices.length} 摄像头, ${_microphoneDevices.length} 麦克风');
+    } catch (e) {
+      logger.e('获取媒体设备失败: $e');
+    }
+
+    notifyListeners();
+  }
   
   Future<void> _cleanupLocalMedia() async {
     if (_localStream != null) {
@@ -401,6 +712,30 @@ class WebRTCManager extends ChangeNotifier {
     _isCameraOn = false;
     _isMicrophoneOn = false;
   }
+
+  Future<void> _cleanupLocalCameraStream() async {
+    if (_localStream != null) {
+      for (final track in _localStream!.getTracks()) {
+        if(track.kind == 'video'){
+          track.stop();
+        }
+      }
+      _isCameraOn = false;
+    }
+  }
+
+  Future<void> _cleanupLocalMicrophoneStream() async {
+    if (_localStream != null) {
+      for (final track in _localStream!.getTracks()) {
+        if(track.kind == 'audio'){
+          track.stop();
+        }
+      }
+      _isMicrophoneOn = false;
+    }
+  }
+  
+  
   
   Future<void> _startScreenSharing() async {
     if(_isScreenSharing) return;
@@ -553,18 +888,42 @@ class WebRTCManager extends ChangeNotifier {
     for (final peer in _remotePeers.values) {
       if (peer.connection == null) continue;
       
-      try {
-        final senders = await peer.connection!.getSenders();
-        final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
-          (s) => s?.track?.kind == 'video',
-          orElse: () => null,
-        );
-        
-        if (videoSender != null) {
-          await videoSender.replaceTrack(newTrack);
+      String? trackKind = newTrack.kind;
+      if(trackKind == 'video'){
+        try {
+          final senders = await peer.connection!.getSenders();
+          final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+            (s) => s?.track?.kind == 'video',
+            orElse: () => null,
+          );
+          
+          if (videoSender != null) {
+            await videoSender.replaceTrack(newTrack);
+          } else if (_localStream != null) {
+            await peer.connection!.addTrack(newTrack, _localStream!);
+          }
+        } catch (e) {
+          logger.w('替换轨道失败 [${peer.id}]: $e');
         }
-      } catch (e) {
-        logger.w('替换轨道失败 [${peer.id}]: $e');
+      }else if(trackKind == 'audio'){
+        try {
+          final senders = await peer.connection!.getSenders();
+          final audioSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+            (s) => s?.track?.kind == 'audio',
+            orElse: () => null,
+          );
+          
+          if (audioSender != null) {
+            await audioSender.replaceTrack(newTrack);
+          } else if (_localStream != null) {
+            await peer.connection!.addTrack(newTrack, _localStream!);
+          }
+        } catch (e) {
+          logger.w('替换轨道失败 [${peer.id}]: $e');
+        }
+      }
+      else {
+        logger.w('未知轨道类型，无法替换: $trackKind');
       }
     }
   }
@@ -784,6 +1143,12 @@ class WebRTCManager extends ChangeNotifier {
       isSignalingConnected: isSignalingConnected,
       errorMessage: errorMessage,
     );
+    notifyListeners();
+  }
+
+  void clearMeetingError() {
+    if (_meetingState.errorMessage == null) return;
+    _meetingState = _meetingState.copyWith(errorMessage: null);
     notifyListeners();
   }
   

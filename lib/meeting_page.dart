@@ -1,9 +1,10 @@
 // pages/meeting_page.dart
-
+import 'package:window_manager/window_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'webrtc_mgr.dart';
 import 'peer_models.dart';
+
 
 class MeetingPage extends StatefulWidget {
   final String selfId;
@@ -25,28 +26,57 @@ class MeetingPage extends StatefulWidget {
 
 class _MeetingPageState extends State<MeetingPage> {
   final WebRTCManager _manager = WebRTCManager();
+  bool _joinWithMic = false;
+  bool _errorSnackBarShown = false;
   
   @override
   void initState() {
     super.initState();
     _manager.addListener(_onManagerUpdate);
-    _initializeMeeting();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _initializeMeeting();
+    });
   }
   
   /// 初始化会议
   Future<void> _initializeMeeting() async {
     try {
+      final shouldJoin = await _showPreJoinDialog();
+      if (!mounted) return;
+
+      if (!shouldJoin) {
+        Navigator.pop(context);
+        return;
+      }
+
       // 1. 初始化信令
       await _manager.initializeSignaling(
         selfId: widget.selfId,
         signalingUrl: widget.signalingUrl,
       );
+
+      // 2. 按用户选择进行设备权限预热，并刷新设备列表
+      await _manager.prepareDevicesForJoin(
+        requestMicPermission: _joinWithMic,
+        requestCameraPermission: false,
+      );
       
-      // 2. 进入房间
+      // 3. 进入房间
       await _manager.joinRoom(
         roomId: widget.roomId,
         isHost: widget.isHost,
       );
+
+      // 4. 仅在用户选择开麦时尝试打开麦克风
+      if (_joinWithMic) {
+        await _manager.toggleMicrophone();
+        if (mounted && !_manager.isMicrophoneOn) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('麦克风权限未授予或设备不可用，已静音入会')),
+          );
+        }
+      }
       
     } catch (e) {
       if (mounted) {
@@ -55,6 +85,55 @@ class _MeetingPageState extends State<MeetingPage> {
         );
       }
     }
+  }
+
+  Future<bool> _showPreJoinDialog() async {
+    bool joinWithMic = false;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('入会设置'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('加入时开启麦克风'),
+                    subtitle: const Text('默认关闭，避免误收音'),
+                    value: joinWithMic,
+                    onChanged: (value) {
+                      setDialogState(() {
+                        joinWithMic = value;
+                      });
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    _joinWithMic = joinWithMic;
+                    Navigator.of(dialogContext).pop(true);
+                  },
+                  child: const Text('加入会议'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    return result ?? false;
   }
   
   void _onManagerUpdate() {
@@ -73,11 +152,15 @@ class _MeetingPageState extends State<MeetingPage> {
     final state = _manager.meetingState;
     
     // 处理错误
-    if (state.errorMessage != null) {
+    if (state.errorMessage != null && !_errorSnackBarShown) {
+      _errorSnackBarShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(state.errorMessage!)),
         );
+        _manager.clearMeetingError();
+        _errorSnackBarShown = false;
       });
     }
     
@@ -87,9 +170,10 @@ class _MeetingPageState extends State<MeetingPage> {
 
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: _buildAppBar(),
+      // appBar: _buildAppBar(),
       body: Column(
         children: [
+          _buildTopWindowBar(),
           Expanded(
             child: allVideosOff 
               ? _buildAvatarGrid(participants)
@@ -100,6 +184,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
+  
   
   /// 构建参会者列表（本地 + 远端）
   List<_ParticipantViewModel> _buildParticipantList() {
@@ -128,6 +213,48 @@ class _MeetingPageState extends State<MeetingPage> {
     }
     
     return list;
+  }
+
+  // 顶部拖拽栏
+  Widget _buildTopWindowBar() {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onPanStart: (details) => windowManager.startDragging(), // 实现窗口拖拽
+      onDoubleTap: () async {
+        bool isMaximized = await windowManager.isMaximized();
+        if (isMaximized) {
+          windowManager.unmaximize();
+        } else {
+          windowManager.maximize();
+        }
+      },
+      child: Container(
+        height: 40,
+        color: const Color.fromARGB(255, 124, 123, 123),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        child: Row(
+          children: [
+            const Icon(Icons.videocam, color: Colors.blue, size: 20),
+            const SizedBox(width: 10),
+            Text(
+              "会议号: ${widget.roomId}",
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+            const Spacer(),
+            // 窗口操作按钮
+            IconButton(
+              icon: const Icon(Icons.minimize, color: Colors.white, size: 16),
+              onPressed: () => windowManager.minimize(),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close, color: Colors.white, size: 16),
+              // onPressed: () => _handleExit(),
+              onPressed: () => _showLeaveConfirmDialog(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   PreferredSizeWidget _buildAppBar() {
@@ -314,17 +441,33 @@ class _MeetingPageState extends State<MeetingPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _buildToolButton(
-            icon: _manager.isMicrophoneOn ? Icons.mic_none : Icons.mic_off,
-            label: '静音',
-            color: _manager.isMicrophoneOn ? Colors.black87 : Colors.red,
-            onTap: _manager.toggleMicrophone,
+          // _buildToolButton(
+          //   icon: _manager.isMicrophoneOn ? Icons.mic_none : Icons.mic_off,
+          //   label: '静音',
+          //   color: _manager.isMicrophoneOn ? Colors.black87 : Colors.red,
+          //   onTap: _manager.toggleMicrophone,
+          // ),
+          _buildDeviceControlButton(
+            isOn: _manager.isMicrophoneOn, 
+            onIcon: Icons.mic_none, 
+            offIcon: Icons.mic_off, 
+            label: '音频', 
+            onToggle: _manager.toggleMicrophone, 
+            onSelectDevice: () => _showDevicePicker('microphone'),
           ),
-          _buildToolButton(
-            icon: _manager.isCameraOn ? Icons.videocam_outlined : Icons.videocam_off,
-            label: '视频',
-            color: _manager.isCameraOn ? Colors.black87 : Colors.red,
-            onTap: _manager.toggleCamera,
+          // _buildToolButton(
+          //   icon: _manager.isCameraOn ? Icons.videocam_outlined : Icons.videocam_off,
+          //   label: '视频',
+          //   color: _manager.isCameraOn ? Colors.black87 : Colors.red,
+          //   onTap: _manager.toggleCamera,
+          // ),
+          _buildDeviceControlButton(
+            isOn: _manager.isCameraOn, 
+            onIcon: Icons.videocam_outlined, 
+            offIcon: Icons.videocam_off, 
+            label: '视频', 
+            onToggle: _manager.toggleCamera, 
+            onSelectDevice: _manager.cameraDevices.isNotEmpty ? () => _showDevicePicker('camera') : () {},
           ),
           _buildToolButton(
             icon: _manager.isScreenSharing ? Icons.screen_share : Icons.screen_share_outlined,
@@ -359,10 +502,40 @@ class _MeetingPageState extends State<MeetingPage> {
           const SizedBox(height: 4),
           Text(
             label,
-            style: TextStyle(color: color.withOpacity(0.8), fontSize: 10),
+            style: TextStyle(color: color, fontSize: 10),
           ),
         ],
       ),
+    );
+  }
+
+  // 带有下拉箭头的控制按钮
+  Widget _buildDeviceControlButton({
+    required bool isOn,
+    required IconData onIcon,
+    required IconData offIcon,
+    required String label,
+    required VoidCallback onToggle,
+    required VoidCallback onSelectDevice,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: Icon(isOn ? onIcon : offIcon, color: isOn ? Colors.black87 : Colors.red),
+              onPressed: onToggle,
+            ),
+            GestureDetector(
+              onTap: onSelectDevice,
+              child: const Icon(Icons.keyboard_arrow_up, color: Colors.grey, size: 16),
+            ),
+          ],
+        ),
+        Text(label, style: const TextStyle(color: Colors.black, fontSize: 10)),
+      ],
     );
   }
 
@@ -411,6 +584,94 @@ class _MeetingPageState extends State<MeetingPage> {
     );
   }
   
+  void _showDevicePicker(String type) async {
+    await _manager.loadDevices(); // 实时获取最新设备
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF333333),
+      builder: (context) {
+        final List<_DevicePickerItem> devices = type == 'camera'
+            ? _manager.cameraDevices
+                .map(
+                  (device) => _DevicePickerItem(
+                    deviceId: device.deviceId,
+                    label: device.label.isNotEmpty ? device.label : device.deviceId,
+                    isDefault: false,
+                  ),
+                )
+                .toList()
+            : [
+                const _DevicePickerItem(
+                  deviceId: 'default',
+                  label: '系统默认麦克风',
+                  isDefault: true,
+                ),
+                ..._manager.microphoneDevices.map(
+                  (device) => _DevicePickerItem(
+                    deviceId: device.deviceId,
+                    label: device.label.isNotEmpty ? device.label : device.deviceId,
+                    isDefault: false,
+                  ),
+                ),
+              ];
+        return ListView.builder(
+          shrinkWrap: true,
+          itemCount: type == 'microphone' ? devices.length + 1 : devices.length,
+          itemBuilder: (context, index) {
+            if (type == 'microphone' && index == 0) {
+              return ListTile(
+                leading: const Icon(Icons.hearing, color: Colors.white),
+                title: const Text('测试系统默认麦克风', style: TextStyle(color: Colors.white)),
+                subtitle: const Text('会短暂打开再立即关闭，用于检测是否可用', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final available = await _manager.probeMicrophoneAvailability();
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(available ? '系统默认麦克风可用' : '系统默认麦克风不可用'),
+                    ),
+                  );
+                },
+              );
+            }
+
+            final deviceIndex = type == 'microphone' ? index - 1 : index;
+            final d = devices[deviceIndex];
+            final currentId = type == 'camera' ? _manager.selectedCameraId : _manager.selectedMicrophoneId;
+
+            bool isSelected = currentId != null && 
+                    currentId.isNotEmpty && 
+                    d.deviceId.isNotEmpty && 
+                    currentId == d.deviceId;
+            if (type == 'microphone' && d.isDefault && (currentId == null || currentId == 'default')) {
+              isSelected = true;
+            }
+            return ListTile(
+              leading: Icon((isSelected)
+                    ? Icons.check
+                    : null,
+                color: const Color.fromARGB(255, 255, 0, 0),
+              ),
+              title: Text(d.label, style: const TextStyle(color: Colors.white)),
+              onTap: () {
+                if (type == 'camera') {
+                  _manager.switchCamera(d.deviceId);
+                }
+                else if (type == 'microphone') {
+                  _manager.switchMicrophone(d.deviceId);
+                }
+                Navigator.pop(context);
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showParticipantsList() {
     showModalBottomSheet(
       context: context,
@@ -470,6 +731,18 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
+}
+
+class _DevicePickerItem {
+  final String deviceId;
+  final String label;
+  final bool isDefault;
+
+  const _DevicePickerItem({
+    required this.deviceId,
+    required this.label,
+    required this.isDefault,
+  });
 }
 
 /// 参会者视图模型（UI 层专用）
