@@ -201,41 +201,51 @@ class _MeetingPageState extends State<MeetingPage> {
     );
   }
 
-  /// 有人开启视频时显示视频网格
+/// 有人开启视频时显示视频网格
   Widget _buildVideoGrid(List<_ParticipantViewModel> participants) {
-    final count = participants.length;
-    final screenRatio = MediaQuery.of(context).size.width / 
-                        MediaQuery.of(context).size.height;
-    const videoAspectRatio = 16 / 9;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final count = participants.length;
+        
+        // 1. 获取精准的可用区域比例（自动剔除了 AppBar 和 BottomBar 的高度）
+        final exactAvailableRatio = constraints.maxWidth / constraints.maxHeight;
+        const videoAspectRatio = 16 / 9;
 
-    return GridView.builder(
-      padding: EdgeInsets.zero,
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: count <= 1 ? 1 : 2,
-        childAspectRatio: count <= 1 ? screenRatio : videoAspectRatio,
-      ),
-      itemCount: count,
-      itemBuilder: (context, index) => _buildVideoItem(participants[index]),
+        return GridView.builder(
+          padding: EdgeInsets.zero,
+          // 2. 核心修复：单人或双人时，彻底禁用物理滚动，把 UI 锁死在可视区域内
+          physics: count <= 2 
+              ? const NeverScrollableScrollPhysics() 
+              : const AlwaysScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: count <= 1 ? 1 : 2,
+            // 3. 单人时使用 LayoutBuilder 提供的精准可用空间比例，彻底填满且不溢出
+            childAspectRatio: count <= 1 ? exactAvailableRatio : videoAspectRatio,
+            mainAxisSpacing: 0,
+            crossAxisSpacing: 0,
+          ),
+          itemCount: count,
+          itemBuilder: (context, index) => _buildVideoItem(participants[index]),
+        );
+      },
     );
   }
-  
+
   Widget _buildVideoItem(_ParticipantViewModel p) {
     return Container(
-      margin: EdgeInsets.zero,
-      color: Colors.black,
+      key: ValueKey(p.id), // 确保列表刷新时状态正确
+      color: const Color(0xFF1A1A1A), // 使用深色背景，减少视觉突变
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // 视频或头像
+          // 只有当视频开启且渲染器存在时才尝试渲染
           if (p.isVideoOn && p.renderer != null)
-            webrtc.RTCVideoView(
-              p.renderer!,
-              mirror: p.isLocal,
-              objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+            _VideoRendererView(
+              renderer: p.renderer!,
+              isLocal: p.isLocal,
             )
           else
             Center(child: _buildCircularAvatar(p.name, 60)),
-          
           // 信息浮层
           Positioned(
             left: 8,
@@ -267,7 +277,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
-
+  
   Widget _buildCircularAvatar(String name, double size) {
     return Container(
       width: size,
@@ -367,7 +377,7 @@ class _MeetingPageState extends State<MeetingPage> {
           borderRadius: BorderRadius.circular(6),
         ),
         child: const Text(
-          '结束会议',
+          '离开会议',
           style: TextStyle(
             color: Colors.white,
             fontSize: 12,
@@ -479,4 +489,51 @@ class _ParticipantViewModel {
     required this.isAudioOn,
     required this.isLocal,
   });
+}
+
+class _VideoRendererView extends StatefulWidget {
+  final webrtc.RTCVideoRenderer renderer;
+  final bool isLocal;
+
+  const _VideoRendererView({required this.renderer, required this.isLocal});
+
+  @override
+  State<_VideoRendererView> createState() => _VideoRendererViewState();
+}
+
+class _VideoRendererViewState extends State<_VideoRendererView> {
+  bool _isReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 初始检查：如果渲染器已经有画面了，直接显示
+    if (widget.renderer.videoWidth > 0) {
+      _isReady = true;
+    }
+    
+    // 监听分辨率变化
+    widget.renderer.onResize = () {
+      if (mounted && !_isReady && widget.renderer.videoWidth > 0) {
+        setState(() {
+          _isReady = true;
+        });
+      }
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      // 如果没准备好，透明度为 0，防止看到那个“比例不对”的瞬间
+      opacity: _isReady ? 1.0 : 0.0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeIn,
+      child: webrtc.RTCVideoView(
+        widget.renderer,
+        mirror: widget.isLocal,
+        objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+      ),
+    );
+  }
 }

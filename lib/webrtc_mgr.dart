@@ -131,7 +131,7 @@ class WebRTCManager extends ChangeNotifier {
     
     try {
       // 1. 初始化本地媒体
-      await _initializeLocalMedia();
+      // await _initializeLocalMedia();
       
       // 2. 发送进房信令
       _sendSignalingMessage({
@@ -144,6 +144,8 @@ class WebRTCManager extends ChangeNotifier {
         currentRoomId: roomId,
       );
       
+      await _localRenderer.initialize();
+
       logger.i('🚪 已进入房间: $roomId');
       
     } catch (e) {
@@ -203,6 +205,16 @@ class WebRTCManager extends ChangeNotifier {
   
   /// 切换摄像头状态
   Future<void> toggleCamera() async {
+    if(_isScreenSharing){
+      logger.w('正在屏幕共享，无法切换摄像头');
+      return;
+    }
+
+    if(_localStream == null) {
+      logger.w('本地媒体未初始化，正在初始化...');
+      await _initializeLocalMedia();
+    }
+
     final videoTracks = _localStream?.getVideoTracks() ?? [];
     if (videoTracks.isEmpty) {
       logger.w('没有可用的视频轨道');
@@ -216,6 +228,10 @@ class WebRTCManager extends ChangeNotifier {
     
     _isCameraOn = newState;
     _broadcastMediaState();
+
+    if(!_isCameraOn){
+      _cleanupLocalMedia();
+    }
     notifyListeners();
     
     logger.i('📹 摄像头: ${_isCameraOn ? "开启" : "关闭"}');
