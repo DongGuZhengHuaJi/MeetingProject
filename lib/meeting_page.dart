@@ -338,16 +338,25 @@ class _MeetingPageState extends State<MeetingPage> {
         final exactAvailableRatio = constraints.maxWidth / constraints.maxHeight;
         const videoAspectRatio = 16 / 9;
 
+        double currentRatio;
+        if (count <= 1) {
+          currentRatio = exactAvailableRatio; // 单人完全填满
+        } else if (count == 2) {
+          // 两人时，平分宽度，并向下填满整个高度
+          currentRatio = (constraints.maxWidth / 2) / constraints.maxHeight;
+        } else {
+          currentRatio = videoAspectRatio; // 多人时回到 16:9
+        }
+
         return GridView.builder(
           padding: EdgeInsets.zero,
-          // 2. 核心修复：单人或双人时，彻底禁用物理滚动，把 UI 锁死在可视区域内
           physics: count <= 2 
               ? const NeverScrollableScrollPhysics() 
               : const AlwaysScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: count <= 1 ? 1 : 2,
             // 3. 单人时使用 LayoutBuilder 提供的精准可用空间比例，彻底填满且不溢出
-            childAspectRatio: count <= 1 ? exactAvailableRatio : videoAspectRatio,
+            childAspectRatio: currentRatio,
             mainAxisSpacing: 0,
             crossAxisSpacing: 0,
           ),

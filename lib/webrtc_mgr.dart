@@ -158,8 +158,22 @@ class WebRTCManager extends ChangeNotifier {
 
       await _loadMediaDevices();
 
-      _selectedCameraId = _cameraDevices.firstOrNull?.deviceId;
-      _selectedMicrophoneId = _microphoneDevices.firstOrNull?.deviceId;
+      // _selectedCameraId = _cameraDevices.firstOrNull?.deviceId;
+      // _selectedMicrophoneId = _microphoneDevices.firstOrNull?.deviceId;
+
+      if(_cameraDevices.isNotEmpty){
+        _selectedCameraId = _cameraDevices.first.deviceId;
+      } else {
+        logger.w('未枚举到摄像头列表，视频功能将不可用');
+      }
+
+      if (_microphoneDevices.isNotEmpty) {
+        _selectedMicrophoneId = _microphoneDevices.first.deviceId;
+      } else {
+        // Linux 兜底：即使没枚举出来，也默认使用系统音频输入
+        _selectedMicrophoneId = 'default';
+        logger.w('未枚举到麦克风列表，强制使用系统默认麦克风(default)');
+      }
 
       logger.i('🚪 已进入房间: $roomId');
       logger.i('📱 可用设备 - 摄像头: ${_cameraDevices.length}, 麦克风: ${_microphoneDevices.length}');
@@ -182,6 +196,7 @@ class WebRTCManager extends ChangeNotifier {
     if (roomId != null) {
       _sendSignalingMessage({
         'type': 'leave',
+        'from': _selfId,
         'room': roomId,
       });
     }
@@ -244,7 +259,29 @@ class WebRTCManager extends ChangeNotifier {
         return;
       }
     } else {
+      // 1. 从所有远端连接中拔出音频轨道，触发重新协商告诉对方“我没声音了”
+      for (final peer in _remotePeers.values) {
+        if (peer.connection != null) {
+          final senders = await peer.connection!.getSenders();
+          final audioSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+            (s) => s?.track?.kind == 'audio',
+            orElse: () => null,
+          );
+          if (audioSender != null) {
+            await peer.connection!.removeTrack(audioSender);
+          }
+        }
+      }
+      
+      // 2. 清理硬件占用
       await _cleanupLocalMicrophoneStream();
+      
+      // 3. 从本地流对象中彻底剥离
+      final audioTracks = _localStream?.getAudioTracks().toList() ?? [];
+      for (var track in audioTracks) {
+        try { await _localStream!.removeTrack(track); } catch (_) {}
+      }
+      
       _isMicrophoneOn = false;
     }
 
@@ -300,7 +337,27 @@ class WebRTCManager extends ChangeNotifier {
         return;
       }
     } else {
+      // 1. 从所有远端连接中拔出视频轨道
+      for (final peer in _remotePeers.values) {
+        if (peer.connection != null) {
+          final senders = await peer.connection!.getSenders();
+          final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+            (s) => s?.track?.kind == 'video',
+            orElse: () => null,
+          );
+          if (videoSender != null) {
+            await peer.connection!.removeTrack(videoSender);
+          }
+        }
+      }
+      
       await _cleanupLocalCameraStream();
+      
+      final videoTracks = _localStream?.getVideoTracks().toList() ?? [];
+      for (var track in videoTracks) {
+        try { await _localStream!.removeTrack(track); } catch (_) {}
+      }
+      
       _localRenderer.srcObject = null;
       _isCameraOn = false;
     }
@@ -631,8 +688,23 @@ class WebRTCManager extends ChangeNotifier {
       logger.w('媒体权限预热失败: $e');
     } finally {
       await _loadMediaDevices();
-      _selectedCameraId ??= _cameraDevices.firstOrNull?.deviceId;
-      _selectedMicrophoneId ??= _microphoneDevices.firstOrNull?.deviceId;
+      // _selectedCameraId ??= _cameraDevices.firstOrNull?.deviceId;
+      // _selectedMicrophoneId ??= _microphoneDevices.firstOrNull?.deviceId;
+
+      if(_cameraDevices.isNotEmpty && _selectedCameraId == null){
+        _selectedCameraId = _cameraDevices.first.deviceId;
+      } else if(_cameraDevices.isEmpty){
+        logger.w('未枚举到摄像头列表，视频功能将不可用');
+      }
+
+      if (_microphoneDevices.isNotEmpty && _selectedMicrophoneId == null) {
+        _selectedMicrophoneId = _microphoneDevices.first.deviceId;
+      } else if (_microphoneDevices.isEmpty) {
+        // Linux 兜底：即使没枚举出来，也默认使用系统音频输入
+        _selectedMicrophoneId = 'default';
+        logger.w('未枚举到麦克风列表，强制使用系统默认麦克风(default)');
+      }
+
       notifyListeners();
 
       if (probeStream != null) {
@@ -820,6 +892,24 @@ class WebRTCManager extends ChangeNotifier {
     final pc = await webrtc.createPeerConnection(_iceServers);
     peer.connection = pc;
     
+    // 重新协商处理
+    pc.onRenegotiationNeeded = () async {
+      logger.i('🔄 需要重新协商: ${peer.id}');
+      try {
+        final offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        _sendSignalingMessage({
+          'type': 'offer',
+          'from': _selfId,
+          'to': peer.id,
+          'sdp': offer.sdp,
+        });
+      } catch (e) {
+        logger.e('重新协商 Offer 失败: $e');
+      }
+    };
+
+
     // ICE 候选处理
     pc.onIceCandidate = (candidate) {
       _sendSignalingMessage({
@@ -834,7 +924,14 @@ class WebRTCManager extends ChangeNotifier {
     pc.onTrack = (event) async {
       logger.i('📥 收到远端轨道 [${peer.id}]: ${event.track.kind}');
       
+      if (event.track.kind == 'video') {
+        peer.isVideoOn = true;
+      } else if (event.track.kind == 'audio') {
+        peer.isAudioOn = true;
+      }
+
       if (event.streams.isNotEmpty) {
+        peer.renderer?.srcObject = null; 
         peer.renderer?.srcObject = event.streams.first;
       }
       
@@ -934,7 +1031,7 @@ class WebRTCManager extends ChangeNotifier {
     try {
       final data = jsonDecode(message) as Map<String, dynamic>;
       final type = data['type'] as String?;
-      final fromId = (data['from'] ?? data['session_id'])?.toString();
+      final fromId = (data['from'] ?? data['session_id'] ?? data['user_id'])?.toString();
       
       logger.d('📨 收到信令: $type from: $fromId');
       
@@ -972,13 +1069,13 @@ class WebRTCManager extends ChangeNotifier {
             _handleCandidate(fromId, data['candidate']);
           }
           break;
-          
+        case 'user_left':
         case 'leave':
           if (fromId != null) {
             _removeRemotePeer(fromId);
           }
           break;
-          
+
         case 'error':
           logger.e('服务器错误: ${data['message']}');
           _updateMeetingState(errorMessage: data['message']);
@@ -997,6 +1094,16 @@ class WebRTCManager extends ChangeNotifier {
   
   Future<void> _handleUserJoined(String peerId) async {
     logger.i('👤 新用户加入: $peerId');
+
+    _sendSignalingMessage({
+      'type': 'media_state',
+      'from': _selfId,
+      'to': peerId,
+      'videoOn': _isCameraOn,
+      'audioOn': _isMicrophoneOn,
+    });
+
+
     await _initiateCall(peerId);
   }
   
@@ -1007,6 +1114,7 @@ class WebRTCManager extends ChangeNotifier {
     peer.isVideoOn = data['videoOn'] ?? false;
     peer.isAudioOn = data['audioOn'] ?? false;
     
+    notifyListeners();
     logger.i('📢 媒体状态更新 [$peerId]: 视频=${peer.isVideoOn}, 音频=${peer.isAudioOn}');
   }
   
@@ -1034,6 +1142,15 @@ class WebRTCManager extends ChangeNotifier {
   
   Future<void> _handleOffer(String peerId, String sdp) async {
     try {
+
+      _sendSignalingMessage({
+        'type': 'media_state',
+        'from': _selfId,
+        'to': peerId,
+        'videoOn': _isCameraOn,
+        'audioOn': _isMicrophoneOn,
+      });
+
       final peer = await _getOrCreateRemotePeer(peerId);
       await _createPeerConnection(peer);
       
@@ -1119,12 +1236,22 @@ class WebRTCManager extends ChangeNotifier {
   }
   
   void _broadcastMediaState() {
-    _sendSignalingMessage({
-      'type': 'media_state',
-      'from': _selfId,
-      'videoOn': _isCameraOn,
-      'audioOn': _isMicrophoneOn,
-    });
+    // for(final peerId in _remotePeers.keys){
+    //   _sendSignalingMessage({
+    //   'type': 'media_state',
+    //   'from': _selfId,
+    //   'to': peerId,
+    //   'videoOn': _isCameraOn,
+    //   'audioOn': _isMicrophoneOn,
+    //   });
+    // }
+      _sendSignalingMessage({
+        'type': 'media_state',
+        'from': _selfId,
+        'room': _meetingState.currentRoomId,
+        'videoOn': _isCameraOn,
+        'audioOn': _isMicrophoneOn,
+      });
   }
   
   void _sendSignalingMessage(Map<String, dynamic> data) {
