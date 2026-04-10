@@ -34,7 +34,8 @@ class _LoginPageState extends State<LoginPage> {
       });
 
       try {
-        await httpMgr.login(userId: account, password: password);
+        // 登录成功后，获取并保存 token
+        // await httpMgr.login(userId: account, password: password);
 
         if (!mounted) return;
 
@@ -43,25 +44,26 @@ class _LoginPageState extends State<LoginPage> {
           _tipColor = Colors.green;
         });
 
-        // 1. 改变窗口为大尺寸
-        await windowManager.setSize(const Size(1200, 800));
-        await windowManager.center();
-        await windowManager.setResizable(true); // 允许主页缩放
 
         if (!mounted) return;
 
         final wtm = WebRTCManager();
         // 登录时，全局初始化信令和 WebSocket，并完成注册
-        await wtm.initializeSignaling(
-          selfId: account,
-          signalingUrl: kSignalingUrl,
-        );
+        // await wtm.initializeSignaling(
+        //   selfId: account,
+        //   signalingUrl: kSignalingUrl,
+        // );
 
         Navigator.pushReplacementNamed(
           context,
           '/home',
           arguments: {'selfId': account},
         );
+
+        // 改变窗口为大尺寸
+        await windowManager.setSize(const Size(1200, 800));
+        await windowManager.center();
+        await windowManager.setResizable(true); // 允许主页缩放
       } on ApiException catch (e) {
         if (!mounted) return;
         setState(() {

@@ -3,7 +3,6 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'webrtc_mgr.dart';
-import 'peer_models.dart';
 
 
 class MeetingPage extends StatefulWidget {
@@ -28,6 +27,11 @@ class _MeetingPageState extends State<MeetingPage> {
   final WebRTCManager _manager = WebRTCManager();
   bool _joinWithMic = false;
   bool _errorSnackBarShown = false;
+
+  static const Color _pageBg = Color(0xFFF6F8FC);
+  static const Color _brandBlue = Color(0xFF1677FF);
+  static const Color _textPrimary = Color(0xFF1F2329);
+  static const Color _textSecondary = Color(0xFF6B7280);
   
   @override
   void initState() {
@@ -96,37 +100,127 @@ class _MeetingPageState extends State<MeetingPage> {
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('入会设置'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('加入时开启麦克风'),
-                    subtitle: const Text('默认关闭，避免误收音'),
-                    value: joinWithMic,
-                    onChanged: (value) {
-                      setDialogState(() {
-                        joinWithMic = value;
-                      });
-                    },
-                  ),
-                ],
+            return Dialog(
+              constraints: BoxConstraints(maxWidth: 400),
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Container(
+                constraints: BoxConstraints(maxWidth: 400),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 24,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '入会设置',
+                      style: TextStyle(
+                        color: _textPrimary,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFD),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFE6EAF2)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '加入时开启麦克风',
+                                  style: TextStyle(
+                                    color: _textPrimary,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                SizedBox(height: 4),
+                                Text(
+                                  '默认关闭，避免误收音',
+                                  style: TextStyle(
+                                    color: _textSecondary,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: joinWithMic,
+                            activeColor: _brandBlue,
+                            onChanged: (value) {
+                              setDialogState(() {
+                                joinWithMic = value;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.of(dialogContext).pop(false),
+                            style: OutlinedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(42),
+                              side: const BorderSide(color: Color(0xFFD9E1EE)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text(
+                              '取消',
+                              style: TextStyle(color: _textSecondary),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () {
+                              _joinWithMic = joinWithMic;
+                              Navigator.of(dialogContext).pop(true);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              minimumSize: const Size.fromHeight(42),
+                              backgroundColor: _brandBlue,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            child: const Text(
+                              '加入会议',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(false),
-                  child: const Text('取消'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    _joinWithMic = joinWithMic;
-                    Navigator.of(dialogContext).pop(true);
-                  },
-                  child: const Text('加入会议'),
-                ),
-              ],
             );
           },
         );
@@ -169,15 +263,21 @@ class _MeetingPageState extends State<MeetingPage> {
     final allVideosOff = participants.every((p) => !p.isVideoOn);
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: _pageBg,
       // appBar: _buildAppBar(),
       body: Column(
         children: [
           _buildTopWindowBar(),
           Expanded(
-            child: allVideosOff 
-              ? _buildAvatarGrid(participants)
-              : _buildVideoGrid(participants),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: allVideosOff
+                    ? _buildAvatarGrid(participants)
+                    : _buildVideoGrid(participants),
+              ),
+            ),
           ),
           _buildBottomBar(),
         ],
@@ -229,25 +329,42 @@ class _MeetingPageState extends State<MeetingPage> {
         }
       },
       child: Container(
-        height: 40,
-        color: const Color.fromARGB(255, 124, 123, 123),
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border(
+            bottom: BorderSide(color: Colors.black.withOpacity(0.06)),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
         child: Row(
           children: [
-            const Icon(Icons.videocam, color: Colors.blue, size: 20),
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                color: const Color(0xFFEAF2FF),
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: const Icon(Icons.videocam_rounded, color: _brandBlue, size: 18),
+            ),
             const SizedBox(width: 10),
             Text(
               "会议号: ${widget.roomId}",
-              style: const TextStyle(color: Colors.white, fontSize: 13),
+              style: const TextStyle(
+                color: _textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const Spacer(),
             // 窗口操作按钮
             IconButton(
-              icon: const Icon(Icons.minimize, color: Colors.white, size: 16),
+              icon: const Icon(Icons.minimize, color: Color(0xFF6B7280), size: 18),
               onPressed: () => windowManager.minimize(),
             ),
             IconButton(
-              icon: const Icon(Icons.close, color: Colors.white, size: 16),
+              icon: const Icon(Icons.close, color: Color(0xFF6B7280), size: 18),
               // onPressed: () => _handleExit(),
               onPressed: () => _showLeaveConfirmDialog(),
             ),
@@ -257,43 +374,10 @@ class _MeetingPageState extends State<MeetingPage> {
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
-    return AppBar(
-      backgroundColor: Colors.white,
-      elevation: 0,
-      centerTitle: true,
-      title: Column(
-        children: [
-          Text(
-            '视频会议',
-            style: TextStyle(
-              color: Colors.black.withOpacity(0.8),
-              fontSize: 16,
-            ),
-          ),
-          Text(
-            'ID: ${widget.roomId}',
-            style: const TextStyle(
-              color: Colors.black45,
-              fontSize: 11,
-            ),
-          ),
-        ],
-      ),
-      leading: const Icon(Icons.info_outline, color: Colors.black45),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.flip_camera_ios_outlined, color: Colors.black45),
-          onPressed: () {}, // TODO: 切换摄像头
-        ),
-      ],
-    );
-  }
-
   /// 所有人关闭视频时显示头像网格
   Widget _buildAvatarGrid(List<_ParticipantViewModel> participants) {
     return Container(
-      color: Colors.white,
+      color: const Color(0xFFF8FAFD),
       padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
       child: Center(
         child: Wrap(
@@ -307,24 +391,47 @@ class _MeetingPageState extends State<MeetingPage> {
   }
   
   Widget _buildAvatarItem(_ParticipantViewModel p) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _buildCircularAvatar(p.name, 70),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!p.isAudioOn) 
-              const Icon(Icons.mic_off, color: Colors.red, size: 12),
-            const SizedBox(width: 4),
-            Text(
-              p.name,
-              style: const TextStyle(color: Colors.black87, fontSize: 12),
-            ),
-          ],
-        ),
-      ],
+    return Container(
+      width: 150,
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE4E9F2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildCircularAvatar(p.name, 68),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                p.isAudioOn ? Icons.mic : Icons.mic_off,
+                color: p.isAudioOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
+                size: 14,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                p.name,
+                style: const TextStyle(
+                  color: _textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -370,7 +477,11 @@ class _MeetingPageState extends State<MeetingPage> {
   Widget _buildVideoItem(_ParticipantViewModel p) {
     return Container(
       key: ValueKey(p.id), // 确保列表刷新时状态正确
-      color: const Color(0xFF1A1A1A), // 使用深色背景，减少视觉突变
+      margin: const EdgeInsets.all(1.2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0F3F8),
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -389,21 +500,21 @@ class _MeetingPageState extends State<MeetingPage> {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(4),
+                color: Colors.white.withOpacity(0.92),
+                borderRadius: BorderRadius.circular(6),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
                     p.isAudioOn ? Icons.mic : Icons.mic_off,
-                    color: p.isAudioOn ? Colors.white : Colors.red,
+                    color: p.isAudioOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
                     size: 10,
                   ),
                   const SizedBox(width: 4),
                   Text(
                     p.name,
-                    style: const TextStyle(color: Colors.white, fontSize: 10),
+                    style: const TextStyle(color: _textPrimary, fontSize: 10),
                   ),
                 ],
               ),
@@ -419,7 +530,7 @@ class _MeetingPageState extends State<MeetingPage> {
       width: size,
       height: size,
       decoration: const BoxDecoration(
-        color: Color(0xFF0052D9),
+        color: _brandBlue,
         shape: BoxShape.circle,
       ),
       child: Center(
@@ -442,20 +553,23 @@ class _MeetingPageState extends State<MeetingPage> {
         border: Border(
           top: BorderSide(color: Colors.black.withOpacity(0.05)),
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, -4),
+          ),
+        ],
       ),
       padding: EdgeInsets.only(
-        bottom: MediaQuery.of(context).padding.bottom + 10,
-        top: 10,
+        bottom: MediaQuery.of(context).padding.bottom + 12,
+        top: 12,
+        left: 12,
+        right: 12,
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // _buildToolButton(
-          //   icon: _manager.isMicrophoneOn ? Icons.mic_none : Icons.mic_off,
-          //   label: '静音',
-          //   color: _manager.isMicrophoneOn ? Colors.black87 : Colors.red,
-          //   onTap: _manager.toggleMicrophone,
-          // ),
           _buildDeviceControlButton(
             isOn: _manager.isMicrophoneOn, 
             onIcon: Icons.mic_none, 
@@ -464,12 +578,6 @@ class _MeetingPageState extends State<MeetingPage> {
             onToggle: _manager.toggleMicrophone, 
             onSelectDevice: () => _showDevicePicker('microphone'),
           ),
-          // _buildToolButton(
-          //   icon: _manager.isCameraOn ? Icons.videocam_outlined : Icons.videocam_off,
-          //   label: '视频',
-          //   color: _manager.isCameraOn ? Colors.black87 : Colors.red,
-          //   onTap: _manager.toggleCamera,
-          // ),
           _buildDeviceControlButton(
             isOn: _manager.isCameraOn, 
             onIcon: Icons.videocam_outlined, 
@@ -481,13 +589,13 @@ class _MeetingPageState extends State<MeetingPage> {
           _buildToolButton(
             icon: _manager.isScreenSharing ? Icons.screen_share : Icons.screen_share_outlined,
             label: '共享屏幕',
-            color: _manager.isScreenSharing ? Colors.black87 : Colors.red,
+            isActive: _manager.isScreenSharing,
             onTap: _manager.toggleScreenSharing,
           ),
           _buildToolButton(
             icon: Icons.group_outlined,
             label: '成员',
-            color: Colors.black87,
+            isActive: false,
             onTap: _showParticipantsList,
           ),
           _buildLeaveButton(),
@@ -499,21 +607,36 @@ class _MeetingPageState extends State<MeetingPage> {
   Widget _buildToolButton({
     required IconData icon,
     required String label,
-    required Color color,
+    required bool isActive,
     required VoidCallback onTap,
   }) {
+    final iconColor = isActive ? _brandBlue : _textPrimary;
+    final bgColor = isActive ? const Color(0xFFEAF2FF) : const Color(0xFFF3F5F9);
+
     return InkWell(
+      borderRadius: BorderRadius.circular(14),
       onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(color: color, fontSize: 10),
-          ),
-        ],
+      child: SizedBox(
+        width: 66,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: bgColor,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, color: iconColor, size: 22),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: TextStyle(color: iconColor, fontSize: 11),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -527,24 +650,44 @@ class _MeetingPageState extends State<MeetingPage> {
     required VoidCallback onToggle,
     required VoidCallback onSelectDevice,
   }) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              icon: Icon(isOn ? onIcon : offIcon, color: isOn ? Colors.black87 : Colors.red),
-              onPressed: onToggle,
-            ),
-            GestureDetector(
-              onTap: onSelectDevice,
-              child: const Icon(Icons.keyboard_arrow_up, color: Colors.grey, size: 16),
-            ),
-          ],
-        ),
-        Text(label, style: const TextStyle(color: Colors.black, fontSize: 10)),
-      ],
+    final iconColor = isOn ? _brandBlue : const Color(0xFFE6504F);
+    final bgColor = isOn ? const Color(0xFFEAF2FF) : const Color(0xFFFFF0F0);
+
+    return SizedBox(
+      width: 72,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onToggle,
+                child: Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(isOn ? onIcon : offIcon, color: iconColor, size: 22),
+                ),
+              ),
+              const SizedBox(width: 2),
+              GestureDetector(
+                onTap: onSelectDevice,
+                child: const Icon(Icons.keyboard_arrow_up, color: _textSecondary, size: 16),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            style: TextStyle(color: iconColor, fontSize: 11),
+          ),
+        ],
+      ),
     );
   }
 
@@ -552,18 +695,18 @@ class _MeetingPageState extends State<MeetingPage> {
     return GestureDetector(
       onTap: () => _showLeaveConfirmDialog(),
       child: Container(
-        margin: const EdgeInsets.only(left: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        margin: const EdgeInsets.only(left: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: const Color(0xFFE54545),
-          borderRadius: BorderRadius.circular(6),
+          color: const Color(0xFFFCEBEC),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: const Text(
-          '离开会议',
+          '离开',
           style: TextStyle(
-            color: Colors.white,
+            color: Color(0xFFE6504F),
             fontSize: 12,
-            fontWeight: FontWeight.bold,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -573,22 +716,86 @@ class _MeetingPageState extends State<MeetingPage> {
   void _showLeaveConfirmDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('离开会议'),
-        content: const Text('确定要离开当前会议吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 400),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 24,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              Navigator.pop(context);
-            },
-            child: const Text('离开', style: TextStyle(color: Colors.red)),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '离开会议',
+                style: TextStyle(
+                  color: _textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '确定要离开当前会议吗？',
+                style: TextStyle(color: _textSecondary, fontSize: 14),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(42),
+                        side: const BorderSide(color: Color(0xFFD9E1EE)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: const Text(
+                        '取消',
+                        style: TextStyle(color: _textSecondary),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () {
+                        Navigator.pop(dialogContext);
+                        Navigator.pop(context);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(42),
+                        backgroundColor: _brandBlue,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      child: const Text(
+                        '确认离开',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -599,7 +806,10 @@ class _MeetingPageState extends State<MeetingPage> {
 
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF333333),
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (context) {
         final List<_DevicePickerItem> devices = type == 'camera'
             ? _manager.cameraDevices
@@ -625,57 +835,103 @@ class _MeetingPageState extends State<MeetingPage> {
                   ),
                 ),
               ];
-        return ListView.builder(
-          shrinkWrap: true,
-          itemCount: type == 'microphone' ? devices.length + 1 : devices.length,
-          itemBuilder: (context, index) {
-            if (type == 'microphone' && index == 0) {
-              return ListTile(
-                leading: const Icon(Icons.hearing, color: Colors.white),
-                title: const Text('测试系统默认麦克风', style: TextStyle(color: Colors.white)),
-                subtitle: const Text('会短暂打开再立即关闭，用于检测是否可用', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                onTap: () async {
-                  Navigator.pop(context);
-                  final available = await _manager.probeMicrophoneAvailability();
-                  if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(available ? '系统默认麦克风可用' : '系统默认麦克风不可用'),
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDCE3EF),
+                      borderRadius: BorderRadius.circular(99),
                     ),
-                  );
-                },
-              );
-            }
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  type == 'camera' ? '选择摄像头' : '选择麦克风',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: type == 'microphone' ? devices.length + 1 : devices.length,
+                    itemBuilder: (context, index) {
+                      if (type == 'microphone' && index == 0) {
+                        return ListTile(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          leading: const Icon(Icons.hearing, color: _brandBlue),
+                          title: const Text('测试系统默认麦克风', style: TextStyle(color: _textPrimary)),
+                          subtitle: const Text(
+                            '会短暂打开再立即关闭，用于检测是否可用',
+                            style: TextStyle(color: _textSecondary, fontSize: 12),
+                          ),
+                          onTap: () async {
+                            Navigator.pop(context);
+                            final available = await _manager.probeMicrophoneAvailability();
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(available ? '系统默认麦克风可用' : '系统默认麦克风不可用'),
+                              ),
+                            );
+                          },
+                        );
+                      }
 
-            final deviceIndex = type == 'microphone' ? index - 1 : index;
-            final d = devices[deviceIndex];
-            final currentId = type == 'camera' ? _manager.selectedCameraId : _manager.selectedMicrophoneId;
+                      final deviceIndex = type == 'microphone' ? index - 1 : index;
+                      final d = devices[deviceIndex];
+                      final currentId = type == 'camera' ? _manager.selectedCameraId : _manager.selectedMicrophoneId;
 
-            bool isSelected = currentId != null && 
-                    currentId.isNotEmpty && 
-                    d.deviceId.isNotEmpty && 
-                    currentId == d.deviceId;
-            if (type == 'microphone' && d.isDefault && (currentId == null || currentId == 'default')) {
-              isSelected = true;
-            }
-            return ListTile(
-              leading: Icon((isSelected)
-                    ? Icons.check
-                    : null,
-                color: const Color.fromARGB(255, 255, 0, 0),
-              ),
-              title: Text(d.label, style: const TextStyle(color: Colors.white)),
-              onTap: () {
-                if (type == 'camera') {
-                  _manager.switchCamera(d.deviceId);
-                }
-                else if (type == 'microphone') {
-                  _manager.switchMicrophone(d.deviceId);
-                }
-                Navigator.pop(context);
-              },
-            );
-          },
+                      bool isSelected = currentId != null &&
+                          currentId.isNotEmpty &&
+                          d.deviceId.isNotEmpty &&
+                          currentId == d.deviceId;
+                      if (type == 'microphone' && d.isDefault && (currentId == null || currentId == 'default')) {
+                        isSelected = true;
+                      }
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        decoration: BoxDecoration(
+                          color: isSelected ? const Color(0xFFEFF5FF) : const Color(0xFFF8FAFD),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: isSelected ? const Color(0xFFBFD7FF) : const Color(0xFFE7ECF5),
+                          ),
+                        ),
+                        child: ListTile(
+                          leading: Icon(
+                            isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                            color: isSelected ? _brandBlue : const Color(0xFFB6BFCC),
+                          ),
+                          title: Text(d.label, style: const TextStyle(color: _textPrimary)),
+                          onTap: () {
+                            if (type == 'camera') {
+                              _manager.switchCamera(d.deviceId);
+                            } else if (type == 'microphone') {
+                              _manager.switchMicrophone(d.deviceId);
+                            }
+                            Navigator.pop(context);
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
@@ -684,57 +940,106 @@ class _MeetingPageState extends State<MeetingPage> {
   void _showParticipantsList() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFDCE3EF),
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '参会成员 (${_manager.remotePeers.length + 1})',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: _textPrimary,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    _buildParticipantListTile(
+                      name: '${widget.selfId} (我)',
+                      audioOn: _manager.isMicrophoneOn,
+                      videoOn: _manager.isCameraOn,
+                      isSelf: true,
+                    ),
+                    ..._manager.remotePeers.values.map(
+                      (peer) => _buildParticipantListTile(
+                        name: peer.name,
+                        audioOn: peer.isAudioOn,
+                        videoOn: peer.isVideoOn,
+                        isSelf: false,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildParticipantListTile({
+    required String name,
+    required bool audioOn,
+    required bool videoOn,
+    required bool isSelf,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFD),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE7ECF5)),
+      ),
+      child: ListTile(
+        leading: CircleAvatar(
+          radius: 16,
+          backgroundColor: isSelf ? const Color(0xFFEAF2FF) : const Color(0xFFEFF2F7),
+          child: Icon(
+            isSelf ? Icons.person : Icons.person_outline,
+            size: 16,
+            color: isSelf ? _brandBlue : _textSecondary,
+          ),
+        ),
+        title: Text(
+          name,
+          style: const TextStyle(color: _textPrimary, fontSize: 14),
+        ),
+        trailing: Row(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '参会成员 (${_manager.remotePeers.length + 1})',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Icon(
+              audioOn ? Icons.mic : Icons.mic_off,
+              size: 19,
+              color: audioOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
             ),
-            const SizedBox(height: 16),
-            ListTile(
-              leading: const Icon(Icons.person),
-              title: Text('${widget.selfId} (我)'),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    _manager.isMicrophoneOn ? Icons.mic : Icons.mic_off,
-                    size: 20,
-                    color: _manager.isMicrophoneOn ? Colors.green : Colors.red,
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    _manager.isCameraOn ? Icons.videocam : Icons.videocam_off,
-                    size: 20,
-                    color: _manager.isCameraOn ? Colors.green : Colors.red,
-                  ),
-                ],
-              ),
+            const SizedBox(width: 10),
+            Icon(
+              videoOn ? Icons.videocam : Icons.videocam_off,
+              size: 19,
+              color: videoOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
             ),
-            ..._manager.remotePeers.values.map((peer) => ListTile(
-              leading: const Icon(Icons.person_outline),
-              title: Text(peer.name),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    peer.isAudioOn ? Icons.mic : Icons.mic_off,
-                    size: 20,
-                    color: peer.isAudioOn ? Colors.green : Colors.red,
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    peer.isVideoOn ? Icons.videocam : Icons.videocam_off,
-                    size: 20,
-                    color: peer.isVideoOn ? Colors.green : Colors.red,
-                  ),
-                ],
-              ),
-            )),
           ],
         ),
       ),
