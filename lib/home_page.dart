@@ -3,6 +3,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:intl/intl.dart';
 
 import 'meeting_page.dart'; // 导入会议页
+import 'app_env.dart';
 
 class HomePage extends StatelessWidget {
   final String selfId;
@@ -112,7 +113,7 @@ class HomePage extends StatelessWidget {
               String randomRoom = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString(); // 生成6位随机号
               Navigator.push(
                 context, 
-                MaterialPageRoute(builder: (context) => MeetingPage(selfId: selfId, roomId: randomRoom, isHost: true, signalingUrl: 'ws://114.132.52.242:8080'))
+                MaterialPageRoute(builder: (context) => MeetingPage(selfId: selfId, roomId: randomRoom, isHost: true, signalingUrl: kSignalingUrl))
               );
             }),
 
@@ -231,7 +232,7 @@ class HomePage extends StatelessWidget {
             Navigator.pop(context);
             Navigator.push(
               context, 
-              MaterialPageRoute(builder: (context) => MeetingPage(selfId: selfId, roomId: _roomCtrl.text, isHost: false, signalingUrl: 'ws://114.132.52.242:8080'))
+              MaterialPageRoute(builder: (context) => MeetingPage(selfId: selfId, roomId: _roomCtrl.text, isHost: false, signalingUrl: kSignalingUrl))
             );
           }, child: const Text("加入")),
         ],

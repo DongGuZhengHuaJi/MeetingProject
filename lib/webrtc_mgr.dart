@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'peer_models.dart';
 import 'websocket_mgr.dart';
+import 'http_mgr.dart';
 
 /// WebRTC 会议管理器
 /// 
@@ -1255,6 +1256,7 @@ class WebRTCManager extends ChangeNotifier {
   }
   
   void _sendSignalingMessage(Map<String, dynamic> data) {
+    data['access_token'] = HttpMgr.instance().accessToken; // 全局附加访问令牌
     _ws.send(jsonEncode(data));
   }
   

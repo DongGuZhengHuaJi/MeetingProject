@@ -41,6 +41,7 @@ class WebsocketMgr {
       });
     } catch (e) {
       logger.e('Failed to connect to WebSocket: $e');
+      rethrow;
     }
   }
   

@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:meetingproject/websocket_mgr.dart';
 import 'package:window_manager/window_manager.dart';
 import 'webrtc_mgr.dart';
-import 'dart:convert';
+import 'http_mgr.dart';
+import 'register_page.dart';
+import 'app_env.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -14,37 +15,85 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final TextEditingController _accountController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
+  final httpMgr = HttpMgr.instance();
+
   String _tipText = "";
   Color _tipColor = Colors.redAccent;
-
+  bool _isLoading = false;
 
   // 登录并切换窗口大小
   void _doLogin() async {
     final account = _accountController.text.trim();
-    if (account.isNotEmpty && _passwordController.text == "123456") {
+    final password = _passwordController.text;
+
+    if (account.isNotEmpty && password.isNotEmpty) {
       setState(() {
-        _tipText = "登录成功，正在进入...";
-        _tipColor = Colors.green;
+        _isLoading = true;
+        _tipText = "正在登录...";
+        _tipColor = Colors.blueAccent;
       });
 
-      // 1. 改变窗口为大尺寸
-      await windowManager.setSize(const Size(1200, 800));
-      await windowManager.center();
-      await windowManager.setResizable(true); // 允许主页缩放
+      try {
+        await httpMgr.login(userId: account, password: password);
 
-      if (!mounted) return;
+        if (!mounted) return;
 
-      final wtm = WebRTCManager();
-      // 登录时，全局初始化信令和 WebSocket，并完成注册
-      await wtm.initializeSignaling(selfId: account, signalingUrl: 'ws://114.132.52.242:8080');
+        setState(() {
+          _tipText = "登录成功，正在进入...";
+          _tipColor = Colors.green;
+        });
 
-      Navigator.pushReplacementNamed(context, '/home', arguments: {'selfId': account});
+        // 1. 改变窗口为大尺寸
+        await windowManager.setSize(const Size(1200, 800));
+        await windowManager.center();
+        await windowManager.setResizable(true); // 允许主页缩放
+
+        if (!mounted) return;
+
+        final wtm = WebRTCManager();
+        // 登录时，全局初始化信令和 WebSocket，并完成注册
+        await wtm.initializeSignaling(
+          selfId: account,
+          signalingUrl: kSignalingUrl,
+        );
+
+        Navigator.pushReplacementNamed(
+          context,
+          '/home',
+          arguments: {'selfId': account},
+        );
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _tipText = "登录失败: ${e.message}";
+          _tipColor = Colors.redAccent;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          _tipText = "登录失败，请检查网络或服务器状态";
+          _tipColor = Colors.redAccent;
+        });
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
+      }
     } else {
       setState(() {
-        _tipText = "账号不能为空，密码为 123456";
+        _tipText = "账号和密码不能为空";
         _tipColor = Colors.redAccent;
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _accountController.dispose();
+    _passwordController.dispose();
+    super.dispose();
   }
 
   @override
@@ -54,8 +103,8 @@ class _LoginPageState extends State<LoginPage> {
       body: Column(
         children: [
           // 自定义窗口栏（负责拖动和关闭）
-          const WindowCaptionArea(), 
-          
+          const WindowCaptionArea(),
+
           Expanded(
             child: Center(
               child: Container(
@@ -65,20 +114,39 @@ class _LoginPageState extends State<LoginPage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Container(
-                      width: 80, height: 80,
+                      width: 80,
+                      height: 80,
                       decoration: BoxDecoration(
-                        shape: BoxShape.circle, color: Colors.white,
-                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10, offset: const Offset(0, 5))],
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 10,
+                            offset: const Offset(0, 5),
+                          ),
+                        ],
                       ),
-                      child: const Icon(Icons.person, size: 50, color: Colors.blueAccent),
+                      child: const Icon(
+                        Icons.person,
+                        size: 50,
+                        color: Colors.blueAccent,
+                      ),
                     ),
                     const SizedBox(height: 40),
                     TextField(
                       controller: _accountController,
                       decoration: InputDecoration(
-                        hintText: '账号', filled: true, fillColor: Colors.white,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        hintText: '账号',
+                        filled: true,
+                        fillColor: Colors.white,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -86,33 +154,82 @@ class _LoginPageState extends State<LoginPage> {
                       controller: _passwordController,
                       obscureText: true,
                       decoration: InputDecoration(
-                        hintText: '密码', filled: true, fillColor: Colors.white,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                        hintText: '密码',
+                        filled: true,
+                        fillColor: Colors.white,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
                     Align(
                       alignment: Alignment.centerLeft,
                       child: Padding(
                         padding: const EdgeInsets.only(top: 8, left: 4),
-                        child: Text(_tipText, style: TextStyle(color: _tipColor, fontSize: 12)),
+                        child: Text(
+                          _tipText,
+                          style: TextStyle(color: _tipColor, fontSize: 12),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 20),
                     SizedBox(
-                      width: double.infinity, height: 45,
+                      width: double.infinity,
+                      height: 45,
                       child: ElevatedButton(
-                        onPressed: _doLogin,
+                        onPressed: _isLoading ? null : _doLogin,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF0099FF),
                           elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
-                        child: const Text("登 录", style: TextStyle(color: Colors.white, fontSize: 16)),
+                        child: _isLoading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.white,
+                                  ),
+                                ),
+                              )
+                            : const Text(
+                                "登 录",
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                ),
+                              ),
                       ),
                     ),
                     const SizedBox(height: 20),
-                    TextButton(onPressed: () {}, child: const Text("找回密码 | 注册账号", style: TextStyle(color: Colors.grey, fontSize: 13))),
+                    TextButton(
+                      onPressed: (){}, 
+                      child:const Text(
+                        "忘记密码？",
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => const RegisterPage()),
+                        );
+                      },
+                      child: const Text(
+                        "注册账号",
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                    ),
                   ],
                 ),
               ),
