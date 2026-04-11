@@ -10,6 +10,7 @@ class MeetingPage extends StatefulWidget {
   final String roomId;
   final bool isHost;
   final String signalingUrl;
+  final bool alreadyJoined;
 
   const MeetingPage({
     super.key,
@@ -17,6 +18,7 @@ class MeetingPage extends StatefulWidget {
     required this.roomId,
     this.isHost = false,
     required this.signalingUrl,
+    this.alreadyJoined = false,
   });
 
   @override
@@ -46,6 +48,10 @@ class _MeetingPageState extends State<MeetingPage> {
   /// 初始化会议
   Future<void> _initializeMeeting() async {
     try {
+      if (widget.alreadyJoined) {
+        return;
+      }
+
       final shouldJoin = await _showPreJoinDialog();
       if (!mounted) return;
 

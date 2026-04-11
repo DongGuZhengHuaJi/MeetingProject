@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart'; // 新增
 import 'login_page.dart';
 import 'home_page.dart'; // 确保导入
+import 'http_mgr.dart'; // 导入HttpMgr
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -43,7 +44,7 @@ class MyApp extends StatelessWidget {
           final args = ModalRoute.of(context)?.settings.arguments;
           final selfId =
               args is Map ? (args['selfId']?.toString() ?? '') : '';
-          return HomePage(selfId: selfId);
+          return HomePage(selfId: selfId, httpMgr: HttpMgr.instance());
         },
       },
     );

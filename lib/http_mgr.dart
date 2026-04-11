@@ -118,6 +118,18 @@ class HttpMgr {
     return tokens;
   }
 
+  Future<void> reserveMeeting({
+    required String userId,
+    required String roomId,
+    required DateTime startTime,
+  }) async {
+    await postWithAccessToken(
+      action: 'reserve',
+      userId: userId,
+      payload: {'from': userId, 'room': roomId, 'time': startTime.toIso8601String()},
+    );
+  }
+
   void _scheduleTokenAutoRefresh({
     required String userId,
     required int? accessExpiresIn,

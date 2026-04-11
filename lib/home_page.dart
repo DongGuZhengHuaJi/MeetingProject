@@ -1,13 +1,98 @@
 import 'package:flutter/material.dart';
-import 'package:window_manager/window_manager.dart';
 import 'package:intl/intl.dart';
+import 'package:logger/logger.dart';
+import 'package:window_manager/window_manager.dart';
 
-import 'meeting_page.dart'; // 导入会议页
 import 'app_env.dart';
+import 'http_mgr.dart';
+import 'meeting_page.dart';
+import 'webrtc_mgr.dart';
 
-class HomePage extends StatelessWidget {
+final logger = Logger();
+
+class ReservedMeeting {
+  final String roomId;
+  final DateTime startTime;
+
+  const ReservedMeeting({required this.roomId, required this.startTime});
+}
+
+class HomePage extends StatefulWidget {
   final String selfId;
-  const HomePage({super.key, required this.selfId});
+  final HttpMgr httpMgr;
+
+  const HomePage({super.key, required this.selfId, required this.httpMgr});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  final List<ReservedMeeting> _reservedMeetings = [];
+
+  Future<void> _joinAndNavigate({
+    required String roomId,
+    required bool isHost,
+  }) async {
+    final manager = WebRTCManager();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      if (!manager.meetingState.isSignalingConnected || manager.selfId != widget.selfId) {
+        await manager.initializeSignaling(
+          selfId: widget.selfId,
+          signalingUrl: kSignalingUrl,
+        );
+      }
+
+      if (manager.isInRoom) {
+        final currentRoom = manager.meetingState.currentRoomId;
+        if (currentRoom != roomId) {
+          await manager.leaveRoom();
+        }
+      }
+
+      await manager.joinRoom(roomId: roomId, isHost: isHost);
+
+      if (!mounted) return;
+      Navigator.pop(context);
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => MeetingPage(
+            selfId: widget.selfId,
+            roomId: roomId,
+            isHost: isHost,
+            signalingUrl: kSignalingUrl,
+            alreadyJoined: true,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('加入失败: $e')),
+      );
+    }
+  }
+
+  void _upsertReservedMeeting(String roomId, DateTime startTime) {
+    final idx = _reservedMeetings.indexWhere((m) => m.roomId == roomId);
+    if (idx >= 0) {
+      _reservedMeetings[idx] = ReservedMeeting(roomId: roomId, startTime: startTime);
+    } else {
+      _reservedMeetings.add(ReservedMeeting(roomId: roomId, startTime: startTime));
+    }
+
+    _reservedMeetings.sort((a, b) => a.startTime.compareTo(b.startTime));
+    setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -15,50 +100,40 @@ class HomePage extends StatelessWidget {
       backgroundColor: Colors.white,
       body: Row(
         children: [
-          // ================= 左侧导航栏 =================
           Container(
             width: 70,
             color: const Color(0xFFF2F3F5),
             child: Column(
               children: [
                 const SizedBox(height: 40),
-                // 头像
                 const CircleAvatar(
                   radius: 22,
                   backgroundColor: Color(0xFF0052D9),
                   child: Text(
-                    "头像",
+                    '头像',
                     style: TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ),
                 const SizedBox(height: 25),
-                // 导航图标
-                _sideIcon(Icons.videocam, "会议", isSelected: true),
+                _sideIcon(Icons.videocam, '会议', isSelected: true),
                 const Spacer(),
-                // 底部图标
-                _sideIcon(Icons.mail_outline, ""),
-                _sideIcon(Icons.settings_outlined, ""),
-                _sideIcon(Icons.person_outline, ""),
+                _sideIcon(Icons.mail_outline, ''),
+                _sideIcon(Icons.settings_outlined, ''),
+                _sideIcon(Icons.person_outline, ''),
                 const SizedBox(height: 20),
               ],
             ),
           ),
-
-          // ================= 右侧主内容区 =================
           Expanded(
             child: Column(
               children: [
-                // 顶部可拖拽栏 + 窗口控制
                 _buildTopBar(),
-
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 40),
                     child: Row(
                       children: [
-                        // 左半部分：功能按钮
                         Expanded(flex: 5, child: _buildLeftContent(context)),
-                        // 右半部分：日期与日程
                         Expanded(flex: 6, child: _buildRightContent()),
                       ],
                     ),
@@ -72,13 +147,11 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 1. 顶部栏（支持拖动 + 窗口按钮）
   Widget _buildTopBar() {
     return SizedBox(
       height: 40,
       child: Row(
         children: [
-          // 占满剩余空间的拖动区域
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -93,13 +166,13 @@ class HomePage extends StatelessWidget {
               child: Container(),
             ),
           ),
-          // 最小化、最大化、关闭
           _winBtn(Icons.remove, () => windowManager.minimize()),
           _winBtn(Icons.crop_square, () async {
-            if (await windowManager.isMaximized())
+            if (await windowManager.isMaximized()) {
               windowManager.unmaximize();
-            else
+            } else {
               windowManager.maximize();
+            }
           }),
           _winBtn(Icons.close, () => windowManager.close(), isClose: true),
         ],
@@ -107,7 +180,6 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 2. 左侧功能矩阵
   Widget _buildLeftContent(BuildContext context) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -122,41 +194,26 @@ class HomePage extends StatelessWidget {
             _mainCard(
               context,
               Icons.video_call,
-              "快速会议",
+              '快速会议',
               const Color(0xFF0052D9),
-              onTap: () {
-                String randomRoom =
-                    (100000 + (DateTime.now().millisecondsSinceEpoch % 899999))
-                        .toString(); // 生成6位随机号
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => MeetingPage(
-                      selfId: selfId,
-                      roomId: randomRoom,
-                      isHost: true,
-                      signalingUrl: kSignalingUrl,
-                    ),
-                  ),
-                );
+              onTap: () async {
+                final randomRoom = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString();
+                await _joinAndNavigate(roomId: randomRoom, isHost: true);
               },
             ),
-
-            // 2. 加入会议：弹出对话框让用户输入房号
             _mainCard(
               context,
               Icons.group_add,
-              "加入会议",
+              '加入会议',
               const Color(0xFF0052D9),
               onTap: () {
                 _showJoinDialog(context);
               },
             ),
-
             _mainCard(
               context,
               Icons.calendar_today,
-              "预定会议",
+              '预定会议',
               const Color(0xFF0052D9),
               onTap: () {
                 _showReserveDialog(context);
@@ -165,7 +222,7 @@ class HomePage extends StatelessWidget {
             _mainCard(
               context,
               Icons.screen_share,
-              "共享屏幕",
+              '共享屏幕',
               const Color(0xFF0052D9),
               onTap: () {},
             ),
@@ -175,11 +232,11 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 3. 右侧日期与日程
   Widget _buildRightContent() {
-    String date = DateFormat('M月d日').format(DateTime.now());
+    final date = DateFormat('M月d日').format(DateTime.now());
+
     return Padding(
-      padding: const EdgeInsets.only(left: 60, top: 100),
+      padding: const EdgeInsets.only(left: 60, top: 80),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -193,34 +250,87 @@ class HomePage extends StatelessWidget {
           ),
           const SizedBox(height: 5),
           const Text(
-            "Android 已登录 (未入会)",
+            '已登录',
             style: TextStyle(color: Colors.grey, fontSize: 13),
           ),
-          const Spacer(),
-          // 暂无会议状态
-          Center(
-            child: Column(
-              children: [
-                Icon(
-                  Icons.coffee_outlined,
-                  size: 80,
-                  color: Colors.grey.withOpacity(0.2),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  "暂无会议",
-                  style: TextStyle(color: Colors.grey, fontSize: 14),
-                ),
-              ],
+          const SizedBox(height: 24),
+          const Text(
+            '会议状态',
+            style: TextStyle(
+              color: Color(0xFF1D2129),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          const Spacer(flex: 2),
+          const SizedBox(height: 12),
+          Expanded(
+            child: _reservedMeetings.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.coffee_outlined,
+                          size: 80,
+                          color: Colors.grey.withOpacity(0.2),
+                        ),
+                        const SizedBox(height: 10),
+                        const Text(
+                          '暂无会议',
+                          style: TextStyle(color: Colors.grey, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    itemCount: _reservedMeetings.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final meeting = _reservedMeetings[index];
+                      final timeText = DateFormat('yyyy-MM-dd HH:mm').format(meeting.startTime);
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7FAFF),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.schedule, size: 18, color: Color(0xFF0052D9)),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '房间号 ${meeting.roomId}',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF1D2129),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    timeText,
+                                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          const SizedBox(height: 16),
         ],
       ),
     );
   }
 
-  // 辅助组件：侧边栏图标
   Widget _sideIcon(IconData icon, String label, {bool isSelected = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
@@ -244,8 +354,6 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 辅助组件：主功能卡片
-  // 辅助组件：主功能卡片（现在支持点击了）
   Widget _mainCard(
     BuildContext context,
     IconData icon,
@@ -254,8 +362,8 @@ class HomePage extends StatelessWidget {
     VoidCallback? onTap,
   }) {
     return InkWell(
-      onTap: onTap, // 绑定点击回调
-      borderRadius: BorderRadius.circular(18), // 保持水波纹和圆角一致
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -289,7 +397,6 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 辅助组件：窗口按钮
   Widget _winBtn(IconData icon, VoidCallback onTap, {bool isClose = false}) {
     return InkWell(
       onTap: onTap,
@@ -302,7 +409,6 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 辅助方法：弹窗输入房号
   void _showJoinDialog(BuildContext context) {
     final TextEditingController roomCtrl = TextEditingController();
     showDialog(
@@ -310,7 +416,7 @@ class HomePage extends StatelessWidget {
       barrierDismissible: false,
       builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (context, setState) {
+          builder: (context, setDialogState) {
             final roomId = roomCtrl.text.trim();
             final canJoin = roomId.isNotEmpty;
 
@@ -327,7 +433,7 @@ class HomePage extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text(
-                      "加入会议",
+                      '加入会议',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -344,9 +450,9 @@ class HomePage extends StatelessWidget {
                       child: TextField(
                         controller: roomCtrl,
                         autofocus: true,
-                        onChanged: (_) => setState(() {}),
+                        onChanged: (_) => setDialogState(() {}),
                         decoration: const InputDecoration(
-                          hintText: "请输入房间号",
+                          hintText: '请输入房间号',
                           border: InputBorder.none,
                         ),
                       ),
@@ -355,7 +461,7 @@ class HomePage extends StatelessWidget {
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
                         child: Text(
-                          "提示：请输入有效的会议号",
+                          '提示：请输入有效的会议号',
                           style: TextStyle(
                             color: Colors.red[400],
                             fontSize: 12,
@@ -369,19 +475,9 @@ class HomePage extends StatelessWidget {
                           child: ElevatedButton(
                             onPressed: !canJoin
                                 ? null
-                                : () {
+                                : () async {
                                     Navigator.pop(dialogContext);
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => MeetingPage(
-                                          selfId: selfId,
-                                          roomId: roomId,
-                                          isHost: false,
-                                          signalingUrl: kSignalingUrl,
-                                        ),
-                                      ),
-                                    );
+                                    await _joinAndNavigate(roomId: roomId, isHost: false);
                                   },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.blueAccent,
@@ -393,10 +489,7 @@ class HomePage extends StatelessWidget {
                               ),
                               elevation: 0,
                             ),
-                            child: const Text(
-                              "确认加入",
-                              style: TextStyle(fontSize: 13),
-                            ),
+                            child: const Text('确认加入', style: TextStyle(fontSize: 13)),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -411,10 +504,7 @@ class HomePage extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                             ),
-                            child: const Text(
-                              "取消",
-                              style: TextStyle(fontSize: 13),
-                            ),
+                            child: const Text('取消', style: TextStyle(fontSize: 13)),
                           ),
                         ),
                       ],
@@ -432,23 +522,22 @@ class HomePage extends StatelessWidget {
   void _showReserveDialog(BuildContext context) {
     DateTime selectedDate = DateTime.now();
     TimeOfDay selectedTime = TimeOfDay.now();
-    String roomId = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999))
-        .toString();
+    final roomId = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString();
 
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) {
+      builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (context, setState) {
-            DateTime finalDateTime = DateTime(
+          builder: (context, setDialogState) {
+            final finalDateTime = DateTime(
               selectedDate.year,
               selectedDate.month,
               selectedDate.day,
               selectedTime.hour,
               selectedTime.minute,
             );
-            bool isValid = finalDateTime.isAfter(DateTime.now());
+            final isValid = finalDateTime.isAfter(DateTime.now());
 
             return Dialog(
               backgroundColor: Colors.transparent,
@@ -463,7 +552,7 @@ class HomePage extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Text(
-                      "预定会议",
+                      '预定会议',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -473,7 +562,7 @@ class HomePage extends StatelessWidget {
                     Row(
                       children: [
                         const Text(
-                          "会议号：",
+                          '会议号：',
                           style: TextStyle(fontSize: 14, color: Colors.black54),
                         ),
                         Text(
@@ -488,36 +577,39 @@ class HomePage extends StatelessWidget {
                     ),
                     const SizedBox(height: 20),
                     _buildPickerItem(
-                      label: "会议日期",
-                      value:
-                          "${selectedDate.year}-${selectedDate.month}-${selectedDate.day}",
+                      label: '会议日期',
+                      value: '${selectedDate.year}-${selectedDate.month}-${selectedDate.day}',
                       onTap: () async {
                         final date = await showDatePicker(
                           context: context,
                           initialDate: selectedDate,
                           firstDate: DateTime.now(),
-                          lastDate: DateTime(2026, 12, 31),
+                          lastDate: DateTime(DateTime.now().year + 1, 12, 31),
                         );
-                        if (date != null) setState(() => selectedDate = date);
+                        if (date != null) {
+                          setDialogState(() => selectedDate = date);
+                        }
                       },
                     ),
                     const SizedBox(height: 12),
                     _buildPickerItem(
-                      label: "开始时间",
+                      label: '开始时间',
                       value: selectedTime.format(context),
                       onTap: () async {
                         final time = await showTimePicker(
                           context: context,
                           initialTime: selectedTime,
                         );
-                        if (time != null) setState(() => selectedTime = time);
+                        if (time != null) {
+                          setDialogState(() => selectedTime = time);
+                        }
                       },
                     ),
                     if (!isValid)
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
                         child: Text(
-                          "提示：预约时间不能早于当前时间",
+                          '提示：预约时间不能早于当前时间',
                           style: TextStyle(
                             color: Colors.red[400],
                             fontSize: 12,
@@ -525,17 +617,40 @@ class HomePage extends StatelessWidget {
                         ),
                       ),
                     const SizedBox(height: 24),
-                    // --- 修改后的按钮区域 ---
                     Row(
                       children: [
                         Expanded(
-                          // 使用 Expanded 平分宽度
                           child: ElevatedButton(
                             onPressed: !isValid
                                 ? null
-                                : () {
-                                    print("确认会议：$roomId at $finalDateTime");
-                                    Navigator.pop(context);
+                                : () async {
+                                    logger.i('确认会议：$roomId at $finalDateTime');
+                                    try {
+                                      await widget.httpMgr.reserveMeeting(
+                                        userId: widget.selfId,
+                                        roomId: roomId,
+                                        startTime: finalDateTime,
+                                      );
+
+                                      if (!mounted) return;
+                                      _upsertReservedMeeting(roomId, finalDateTime);
+                                      Navigator.pop(dialogContext);
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('会议预约成功：$roomId')),
+                                      );
+                                    } on ApiException catch (e) {
+                                      logger.e('API Error reserving meeting: ${e.message}');
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('预约失败：${e.message}')),
+                                      );
+                                    } catch (e) {
+                                      logger.e('Error reserving meeting: $e');
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('预约失败：$e')),
+                                      );
+                                    }
                                   },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.blueAccent,
@@ -547,18 +662,13 @@ class HomePage extends StatelessWidget {
                               ),
                               elevation: 0,
                             ),
-                            child: const Text(
-                              "确认预定",
-                              style: TextStyle(fontSize: 13),
-                            ),
+                            child: const Text('确认预定', style: TextStyle(fontSize: 13)),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          // 使用 Expanded 平分宽度
                           child: OutlinedButton(
-                            // 建议取消按钮用描边样式，视觉上更精致
-                            onPressed: () => Navigator.pop(context),
+                            onPressed: () => Navigator.pop(dialogContext),
                             style: OutlinedButton.styleFrom(
                               side: const BorderSide(color: Colors.blueAccent),
                               foregroundColor: Colors.blueAccent,
@@ -567,10 +677,7 @@ class HomePage extends StatelessWidget {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                             ),
-                            child: const Text(
-                              "取消预约",
-                              style: TextStyle(fontSize: 13),
-                            ),
+                            child: const Text('取消预约', style: TextStyle(fontSize: 13)),
                           ),
                         ),
                       ],
@@ -585,7 +692,6 @@ class HomePage extends StatelessWidget {
     );
   }
 
-  // 辅助方法：构建选择框的UI
   Widget _buildPickerItem({
     required String label,
     required String value,

@@ -43,6 +43,8 @@ class WebRTCManager extends ChangeNotifier {
   MeetingState _meetingState = const MeetingState();
   final Map<String, RemotePeer> _remotePeers = {};
   StreamSubscription<String>? _wsSubscription;
+  Completer<void>? _joinAckCompleter;
+  String? _pendingJoinRoomId;
   
   // ==================== 常量配置 ====================
   static const Map<String, dynamic> _defaultVideoConstraints = {
@@ -143,16 +145,21 @@ class WebRTCManager extends ChangeNotifier {
     try {
       // 1. 初始化本地媒体
       // await _initializeLocalMedia();
+
+      clearMeetingError();
       
       // 2. 发送进房信令
       _sendSignalingMessage({
         'type': isHost ? 'create' : 'join',
         'room': roomId,
       });
+
+      await _waitForJoinAck(roomId: roomId);
       
       _updateMeetingState(
         isInRoom: true,
         currentRoomId: roomId,
+        errorMessage: null,
       );
       
       await _localRenderer.initialize();
@@ -182,6 +189,10 @@ class WebRTCManager extends ChangeNotifier {
       
     } catch (e) {
       logger.e('❌ 进入房间失败: $e');
+      _updateMeetingState(
+        isInRoom: false,
+        currentRoomId: null,
+      );
       await _cleanupLocalMedia();
       rethrow;
     }
@@ -981,6 +992,56 @@ class WebRTCManager extends ChangeNotifier {
     }
     _remotePeers.clear();
   }
+
+  Future<void> _waitForJoinAck({
+    required String roomId,
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    if (_joinAckCompleter != null && !_joinAckCompleter!.isCompleted) {
+      _joinAckCompleter!.completeError(StateError('Previous join request interrupted'));
+    }
+
+    final completer = Completer<void>();
+    _joinAckCompleter = completer;
+    _pendingJoinRoomId = roomId;
+
+    try {
+      await completer.future.timeout(timeout);
+    } on TimeoutException {
+      if (identical(_joinAckCompleter, completer)) {
+        _joinAckCompleter = null;
+        _pendingJoinRoomId = null;
+      }
+      throw TimeoutException('Join room timeout, no response from signaling server');
+    }
+  }
+
+  void _resolveJoinAckSuccess(String? roomId) {
+    final completer = _joinAckCompleter;
+    if (completer == null || completer.isCompleted) {
+      return;
+    }
+
+    if (roomId != null && _pendingJoinRoomId != null && roomId != _pendingJoinRoomId) {
+      logger.w('Ignoring join ack for unexpected room: $roomId (expect: $_pendingJoinRoomId)');
+      return;
+    }
+
+    _joinAckCompleter = null;
+    _pendingJoinRoomId = null;
+    completer.complete();
+  }
+
+  void _resolveJoinAckError(String message) {
+    final completer = _joinAckCompleter;
+    if (completer == null || completer.isCompleted) {
+      return;
+    }
+
+    _joinAckCompleter = null;
+    _pendingJoinRoomId = null;
+    completer.completeError(StateError(message));
+  }
   
   Future<void> _replaceTrackOnAllConnections(webrtc.MediaStreamTrack newTrack) async {
     for (final peer in _remotePeers.values) {
@@ -1040,6 +1101,11 @@ class WebRTCManager extends ChangeNotifier {
         case 'register_success':
           logger.i('✅ 服务器注册成功');
           break;
+
+        case 'create_room_success':
+        case 'join_room_success':
+          _resolveJoinAckSuccess(data['room_id']?.toString());
+          break;
           
         case 'user_joined':
           if (fromId != null && fromId != _selfId) {
@@ -1078,9 +1144,15 @@ class WebRTCManager extends ChangeNotifier {
           break;
 
         case 'error':
-          logger.e('服务器错误: ${data['message']}');
-          _updateMeetingState(errorMessage: data['message']);
+          final errMsg = data['message']?.toString() ?? 'Unknown signaling error';
+          logger.e('服务器错误: $errMsg');
+          _resolveJoinAckError(errMsg);
+          _updateMeetingState(errorMessage: errMsg);
           break;
+
+        // case 'reservation_notice':
+        //   logger.i('📅 收到预约通知: ${data['event']}');
+        //   break;
           
         default:
           logger.w('未知信令类型: $type');

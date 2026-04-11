@@ -35,7 +35,7 @@ class _LoginPageState extends State<LoginPage> {
 
       try {
         // 登录成功后，获取并保存 token
-        // await httpMgr.login(userId: account, password: password);
+        await httpMgr.login(userId: account, password: password);
 
         if (!mounted) return;
 
@@ -49,10 +49,10 @@ class _LoginPageState extends State<LoginPage> {
 
         final wtm = WebRTCManager();
         // 登录时，全局初始化信令和 WebSocket，并完成注册
-        // await wtm.initializeSignaling(
-        //   selfId: account,
-        //   signalingUrl: kSignalingUrl,
-        // );
+        await wtm.initializeSignaling(
+          selfId: account,
+          signalingUrl: kSignalingUrl,
+        );
 
         Navigator.pushReplacementNamed(
           context,
