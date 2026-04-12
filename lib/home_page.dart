@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:logger/logger.dart';
@@ -9,13 +11,6 @@ import 'meeting_page.dart';
 import 'webrtc_mgr.dart';
 
 final logger = Logger();
-
-class ReservedMeeting {
-  final String roomId;
-  final DateTime startTime;
-
-  const ReservedMeeting({required this.roomId, required this.startTime});
-}
 
 class HomePage extends StatefulWidget {
   final String selfId;
@@ -29,6 +24,45 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final List<ReservedMeeting> _reservedMeetings = [];
+  Timer? _meetingStatusTimer;
+
+  List<ReservedMeeting> get _scheduledReservedMeetings {
+    final result = _reservedMeetings
+        .where((m) => m.meetingType == 'reserved' && !m.isClosed)
+        .toList();
+    result.sort((a, b) => a.startTime.compareTo(b.startTime));
+    return result;
+  }
+
+  List<ReservedMeeting> get _historyMeetings {
+    final result = _reservedMeetings
+        .where((m) => m.meetingType == 'reserved' && m.isClosed)
+        .toList();
+    result.sort((a, b) {
+      final aEnd = a.endedAt ?? a.startTime;
+      final bEnd = b.endedAt ?? b.startTime;
+      return bEnd.compareTo(aEnd);
+    });
+    return result;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchReservedMeetings();
+    _meetingStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _meetingStatusTimer?.cancel();
+    super.dispose();
+  }
+
 
   Future<void> _joinAndNavigate({
     required String roomId,
@@ -82,12 +116,45 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _upsertReservedMeeting(String roomId, DateTime startTime) {
+  Future<void> _fetchReservedMeetings() async {
+    try {
+      final meetings = await widget.httpMgr.getUserReservedMeetings(userId: widget.selfId);
+      setState(() {
+        _reservedMeetings
+          ..clear()
+          ..addAll(meetings);
+      });
+    } on ApiException catch (e) {
+      logger.e('API Error fetching meetings: ${e.message}');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('获取会议列表失败：${e.message}')),
+      );
+    } catch (e) {
+      logger.e('Error fetching meetings: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('获取会议列表失败：$e')),
+      );
+    }
+  }
+
+  void _upsertReservedMeeting(String roomId, DateTime startTime, String status) {
     final idx = _reservedMeetings.indexWhere((m) => m.roomId == roomId);
     if (idx >= 0) {
-      _reservedMeetings[idx] = ReservedMeeting(roomId: roomId, startTime: startTime);
+      _reservedMeetings[idx] = ReservedMeeting(
+        roomId: roomId,
+        startTime: startTime,
+        meetingType: 'reserved',
+        status: status,
+      );
     } else {
-      _reservedMeetings.add(ReservedMeeting(roomId: roomId, startTime: startTime));
+      _reservedMeetings.add(ReservedMeeting(
+        roomId: roomId,
+        startTime: startTime,
+        meetingType: 'reserved',
+        status: status,
+      ));
     }
 
     _reservedMeetings.sort((a, b) => a.startTime.compareTo(b.startTime));
@@ -198,6 +265,18 @@ class _HomePageState extends State<HomePage> {
               const Color(0xFF0052D9),
               onTap: () async {
                 final randomRoom = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString();
+                try {
+                  await widget.httpMgr.startQuickMeeting(
+                    userId: widget.selfId,
+                    roomId: randomRoom,
+                  );
+                } catch (e) {
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('快速会议记录失败：$e')),
+                  );
+                  return;
+                }
                 await _joinAndNavigate(roomId: randomRoom, isHost: true);
               },
             ),
@@ -255,7 +334,21 @@ class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(height: 24),
           const Text(
-            '会议状态',
+            '预约会议',
+            style: TextStyle(
+              color: Color(0xFF1D2129),
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildMeetingSection(
+            meetings: _scheduledReservedMeetings,
+            emptyText: '暂无预约会议',
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            '历史会议',
             style: TextStyle(
               color: Color(0xFF1D2129),
               fontSize: 16,
@@ -264,7 +357,7 @@ class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(height: 12),
           Expanded(
-            child: _reservedMeetings.isEmpty
+            child: _historyMeetings.isEmpty
                 ? Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -276,52 +369,18 @@ class _HomePageState extends State<HomePage> {
                         ),
                         const SizedBox(height: 10),
                         const Text(
-                          '暂无会议',
+                          '暂无历史会议',
                           style: TextStyle(color: Colors.grey, fontSize: 14),
                         ),
                       ],
                     ),
                   )
                 : ListView.separated(
-                    itemCount: _reservedMeetings.length,
+                    itemCount: _historyMeetings.length,
                     separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, index) {
-                      final meeting = _reservedMeetings[index];
-                      final timeText = DateFormat('yyyy-MM-dd HH:mm').format(meeting.startTime);
-                      return Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF7FAFF),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.schedule, size: 18, color: Color(0xFF0052D9)),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '房间号 ${meeting.roomId}',
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                      color: Color(0xFF1D2129),
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    timeText,
-                                    style: const TextStyle(fontSize: 12, color: Colors.black54),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
+                      final meeting = _historyMeetings[index];
+                      return _buildMeetingCard(meeting);
                     },
                   ),
           ),
@@ -633,7 +692,7 @@ class _HomePageState extends State<HomePage> {
                                       );
 
                                       if (!mounted) return;
-                                      _upsertReservedMeeting(roomId, finalDateTime);
+                                      _upsertReservedMeeting(roomId, finalDateTime, 'scheduled');
                                       Navigator.pop(dialogContext);
                                       ScaffoldMessenger.of(context).showSnackBar(
                                         SnackBar(content: Text('会议预约成功：$roomId')),
@@ -720,6 +779,112 @@ class _HomePageState extends State<HomePage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildMeetingSection({
+    required List<ReservedMeeting> meetings,
+    required String emptyText,
+  }) {
+    if (meetings.isEmpty) {
+      return Container(
+        height: 120,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7FAFF),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Text(
+          emptyText,
+          style: const TextStyle(color: Colors.grey, fontSize: 13),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 190,
+      child: ListView.separated(
+        itemCount: meetings.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (context, index) => _buildMeetingCard(meetings[index]),
+      ),
+    );
+  }
+
+  Widget _buildMeetingCard(ReservedMeeting meeting) {
+    final startText = DateFormat('yyyy-MM-dd HH:mm').format(meeting.startTime);
+    final endText = meeting.endedAt == null
+        ? null
+        : DateFormat('yyyy-MM-dd HH:mm').format(meeting.endedAt!);
+    final now = DateTime.now();
+    final bool started = !meeting.isClosed && !meeting.startTime.isAfter(now);
+    final statusText = meeting.isClosed
+      ? '已关闭'
+      : (started ? '已开始' : '未开始');
+    final statusColor = meeting.isClosed
+      ? const Color(0xFF8C8C8C)
+      : (started ? const Color(0xFF18A058) : const Color(0xFF1677FF));
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7FAFF),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.schedule, size: 18, color: Color(0xFF0052D9)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '房间号 ${meeting.roomId}',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1D2129),
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: statusColor.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        statusText,
+                        style: TextStyle(
+                          color: statusColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '开始: $startText',
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+                if (endText != null)
+                  Text(
+                    '结束: $endText${meeting.endReason == null ? '' : '（${meeting.endReason}）'}',
+                    style: const TextStyle(fontSize: 12, color: Colors.black45),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

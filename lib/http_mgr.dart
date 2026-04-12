@@ -3,6 +3,26 @@ import 'dart:io';
 import 'dart:async';
 import 'app_env.dart';
 
+class ReservedMeeting{
+  final String roomId;
+  final DateTime startTime;
+  final String meetingType;
+  final String status;
+  final DateTime? endedAt;
+  final String? endReason;
+
+  ReservedMeeting({
+    required this.roomId,
+    required this.startTime,
+    required this.meetingType,
+    required this.status,
+    this.endedAt,
+    this.endReason,
+  });
+
+  bool get isClosed => status.toLowerCase() == 'closed';
+}
+
 class ApiException implements Exception {
   final int? statusCode;
   final String message;
@@ -62,7 +82,7 @@ class HttpMgr {
 
   static final HttpMgr _instance = HttpMgr._internal(
     kApiBaseUrl,
-    timeout: const Duration(seconds: 8),
+    timeout: const Duration(seconds: 12),
   );
   factory HttpMgr.instance() => _instance;
   HttpMgr._internal(this.baseUrl, {this.timeout = const Duration(seconds: 8), HttpClient? client})
@@ -116,6 +136,73 @@ class HttpMgr {
     );
 
     return tokens;
+  }
+
+  Future<List<ReservedMeeting>> getUserReservedMeetings({required String userId}) async {
+    final rsp = await _postWithRetry(
+      action: 'get_user_reservations',
+      body: {
+        'from': userId,
+        'access_token': _accessToken,
+      },
+      maxAttempts: 2,
+    );
+    
+    if(rsp['error'] != null) {
+      throw ApiException(
+        rsp['error'].toString(),
+        statusCode: rsp['status_code'] as int?,
+      );
+    }
+
+    final List<dynamic> reservations = rsp['reservations'] ?? [];
+    return reservations.map((r) => ReservedMeeting(
+      roomId: r['room'] as String,
+      startTime: _parseServerDateTime(r['time']),
+      meetingType: (r['meeting_type'] ?? 'reserved').toString(),
+      status: r['status'] as String,
+      endedAt: _parseNullableServerDateTime(r['ended_at']),
+      endReason: _parseNullableString(r['end_reason']),
+    )).toList();
+  }
+
+  Future<void> startQuickMeeting({
+    required String userId,
+    required String roomId,
+  }) async {
+    await postWithAccessToken(
+      action: 'quick_meeting_start',
+      userId: userId,
+      payload: {
+        'from': userId,
+        'room': roomId,
+      },
+    );
+  }
+
+  static DateTime _parseServerDateTime(dynamic value) {
+    final raw = (value ?? '').toString().trim();
+    if (raw.isEmpty) {
+      throw const ApiException('Invalid datetime value from server');
+    }
+
+    final normalized = raw.contains('T') ? raw : raw.replaceFirst(' ', 'T');
+    return DateTime.parse(normalized);
+  }
+
+  static DateTime? _parseNullableServerDateTime(dynamic value) {
+    final raw = (value ?? '').toString().trim();
+    if (raw.isEmpty) return null;
+    final normalized = raw.contains('T') ? raw : raw.replaceFirst(' ', 'T');
+    return DateTime.parse(normalized);
+  }
+
+  static String? _parseNullableString(dynamic value) {
+    final raw = (value ?? '').toString().trim();
+    if (raw.isEmpty) {
+      return null;
+    }
+    return raw;
   }
 
   Future<void> reserveMeeting({
@@ -233,13 +320,21 @@ class HttpMgr {
     Map<String, dynamic> body,
   ) async {
     final uri = Uri.parse(baseUrl);
-    final req = await _client.postUrl(uri).timeout(timeout);
-    req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
-    // 用 write() 而不是 add() - 能正确处理字符串和编码
-    req.write(jsonEncode({'action': action, ...body}));
 
-    final rsp = await req.close().timeout(timeout);
-    final text = await rsp.transform(utf8.decoder).join();
+    late HttpClientResponse rsp;
+    String text = '';
+    try {
+      final req = await _client.postUrl(uri).timeout(timeout);
+      req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+      req.write(jsonEncode({'action': action, ...body}));
+
+      rsp = await req.close().timeout(timeout);
+      text = await rsp.transform(utf8.decoder).join().timeout(timeout);
+    } on TimeoutException catch (_) {
+      throw ApiException('Request timeout on action=$action');
+    } on SocketException catch (e) {
+      throw ApiException('Network error on action=$action: ${e.message}');
+    }
 
     Map<String, dynamic> jsonBody;
     try {
@@ -270,6 +365,27 @@ class HttpMgr {
     }
 
     return jsonBody;
+  }
+
+  Future<Map<String, dynamic>> _postWithRetry({
+    required String action,
+    required Map<String, dynamic> body,
+    int maxAttempts = 2,
+  }) async {
+    ApiException? lastError;
+    for (int i = 1; i <= maxAttempts; i++) {
+      try {
+        return await _postAction(action, body);
+      } on ApiException catch (e) {
+        lastError = e;
+        final isTimeout = e.message.contains('timeout');
+        if (!isTimeout || i == maxAttempts) {
+          rethrow;
+        }
+        await Future.delayed(const Duration(milliseconds: 400));
+      }
+    }
+    throw lastError ?? const ApiException('Unknown request failure');
   }
 
   void dispose() {

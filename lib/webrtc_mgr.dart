@@ -199,7 +199,7 @@ class WebRTCManager extends ChangeNotifier {
   }
   
   /// 离开当前房间
-  Future<void> leaveRoom() async {
+  Future<void> leaveRoom({bool endMeetingIfHost = false}) async {
     if (!_meetingState.isInRoom) return;
     
     final roomId = _meetingState.currentRoomId;
@@ -210,6 +210,7 @@ class WebRTCManager extends ChangeNotifier {
         'type': 'leave',
         'from': _selfId,
         'room': roomId,
+        'end_meeting': endMeetingIfHost,
       });
     }
     
@@ -325,7 +326,6 @@ class WebRTCManager extends ChangeNotifier {
         if (_localStream == null) {
           _localStream = newStream;
         } else {
-          // 【核心修复】：使用 toList() 安全遍历，并隔离 removeTrack 的底层报错
           final oldTracks = _localStream!.getVideoTracks().toList();
           for (var track in oldTracks) {
             try {
@@ -489,76 +489,6 @@ class WebRTCManager extends ChangeNotifier {
     }
   }
 
-  // Future<void> switchCamera(String cameraId) async {
-  //   if(_selectedCameraId == cameraId) return; // 已选中，无需切换
-  //   _selectedCameraId = cameraId;
-
-  //   if(_isCameraOn && _localStream != null){
-  //     final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
-  //       'audio': false,
-  //       'video': {
-  //         'deviceId': {'exact': cameraId},
-  //       },
-  //     });
-
-  //     final newVideoTracks = newStream.getVideoTracks();
-  //     if (newVideoTracks.isEmpty) {
-  //       throw Exception('无法切换摄像头: 未获取到视频轨道');
-  //     }
-
-  //     final newVideoTrack = newVideoTracks.first;
-  //     final oldVideoTracks = _localStream!.getVideoTracks();
-
-  //     for (final track in oldVideoTracks) {
-  //       try {
-  //         await _localStream!.removeTrack(track);
-  //       } catch (e) {
-  //         logger.w('移除旧摄像头轨道时发生非致命错误: $e');
-  //       }
-  //       await track.stop();
-  //     }
-
-  //     await _localStream!.addTrack(newVideoTrack);
-  //     _cameraStream = newStream;
-  //     _localRenderer.srcObject = _localStream;
-  //     await _replaceTrackOnAllConnections(newVideoTrack);
-  //     notifyListeners();
-  //   }
-  // }
-
-  // Future<void> switchMicrophone(String microphoneId) async {
-  //   if(_selectedMicrophoneId == microphoneId) return; // 已选中，无需切换
-  //   _selectedMicrophoneId = microphoneId;
-
-  //   if(_isMicrophoneOn && _localStream != null){
-  //     final newStream = await webrtc.navigator.mediaDevices.getUserMedia({
-  //       'audio': {
-  //         'deviceId': {'exact': microphoneId},
-  //       },
-  //       'video': false,
-  //     });
-
-  //     final newAudioTracks = newStream.getAudioTracks();
-  //     if (newAudioTracks.isEmpty) {
-  //       throw Exception('无法切换麦克风: 未获取到音频轨道');
-  //     }
-
-  //     final newAudioTrack = newAudioTracks.first;
-  //     final oldAudioTracks = _localStream!.getAudioTracks();
-
-  //     for (final track in oldAudioTracks) {
-  //       try {
-  //         await _localStream!.removeTrack(track);
-  //       } catch (e) {
-  //         logger.w('移除旧麦克风轨道时发生非致命错误: $e');
-  //       }
-  //       await track.stop();
-  //     }
-
-  //     await _localStream!.addTrack(newAudioTrack);
-  //     notifyListeners();
-  //   }
-  // }
 
   /// 切换指定摄像头设备
   Future<void> switchCamera(String cameraId) async {
@@ -1142,7 +1072,10 @@ class WebRTCManager extends ChangeNotifier {
             _removeRemotePeer(fromId);
           }
           break;
-
+        case 'room_closed':
+          unawaited(_handleRoomClosed(data));
+          break;
+          
         case 'error':
           final errMsg = data['message']?.toString() ?? 'Unknown signaling error';
           logger.e('服务器错误: $errMsg');
@@ -1189,6 +1122,34 @@ class WebRTCManager extends ChangeNotifier {
     
     notifyListeners();
     logger.i('📢 媒体状态更新 [$peerId]: 视频=${peer.isVideoOn}, 音频=${peer.isAudioOn}');
+  }
+
+  Future<void> _handleRoomClosed(Map<String, dynamic> data) async {
+    final roomId = data['room_id']?.toString() ?? _meetingState.currentRoomId;
+    final reason = data['reason']?.toString() ?? 'unknown';
+    final meetingType = data['meeting_type']?.toString() ?? 'unknown';
+
+    if (_meetingState.currentRoomId != null &&
+        roomId != null &&
+        _meetingState.currentRoomId != roomId) {
+      logger.w('忽略其他房间的关闭通知: $roomId');
+      return;
+    }
+
+    await _cleanupAllRemotePeers();
+    await _cleanupLocalMedia();
+    _cameraDevices.clear();
+    _microphoneDevices.clear();
+    _selectedCameraId = null;
+    _selectedMicrophoneId = null;
+
+    _updateMeetingState(
+      isInRoom: false,
+      currentRoomId: null,
+      errorMessage: '会议已关闭（$meetingType/$reason）',
+    );
+
+    logger.w('⚠️ 房间已关闭: room=$roomId, type=$meetingType, reason=$reason');
   }
   
   Future<void> _initiateCall(String peerId) async {

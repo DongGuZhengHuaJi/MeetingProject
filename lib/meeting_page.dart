@@ -753,9 +753,11 @@ class _MeetingPageState extends State<MeetingPage> {
                 ),
               ),
               const SizedBox(height: 8),
-              const Text(
-                '确定要离开当前会议吗？',
-                style: TextStyle(color: _textSecondary, fontSize: 14),
+              Text(
+                widget.isHost
+                    ? '你是房主，可选择仅离开或直接结束会议。'
+                    : '确定要离开当前会议吗？',
+                style: const TextStyle(color: _textSecondary, fontSize: 14),
               ),
               const SizedBox(height: 18),
               Row(
@@ -779,8 +781,9 @@ class _MeetingPageState extends State<MeetingPage> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () {
+                      onPressed: () async {
                         Navigator.pop(dialogContext);
+                        await _manager.leaveRoom(endMeetingIfHost: false);
                         Navigator.pop(context);
                       },
                       style: ElevatedButton.styleFrom(
@@ -792,13 +795,39 @@ class _MeetingPageState extends State<MeetingPage> {
                         ),
                       ),
                       child: const Text(
-                        '确认离开',
+                        '离开会议',
                         style: TextStyle(color: Colors.white),
                       ),
                     ),
                   ),
                 ],
               ),
+              if (widget.isHost) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      Navigator.pop(dialogContext);
+                      await _manager.leaveRoom(endMeetingIfHost: true);
+                      if (!mounted) return;
+                      Navigator.pop(context);
+                    },
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(42),
+                      backgroundColor: const Color(0xFFE6504F),
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    child: const Text(
+                      '结束会议（关闭房间）',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
