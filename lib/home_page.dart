@@ -6,9 +6,9 @@ import 'package:logger/logger.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app_env.dart';
+import 'home_controller.dart';
 import 'http_mgr.dart';
 import 'meeting_page.dart';
-import 'webrtc_mgr.dart';
 
 final logger = Logger();
 
@@ -25,36 +25,28 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final WebRTCManager _manager = WebRTCManager();
-  final List<ReservedMeeting> _reservedMeetings = [];
+  late final HomeController _controller;
   Timer? _meetingStatusTimer;
-  StreamSubscription<MeetingUiEvent>? _managerEventSub;
+  StreamSubscription<HomeUiEvent>? _controllerEventSub;
 
   List<ReservedMeeting> get _scheduledReservedMeetings {
-    final result = _reservedMeetings
-        .where((m) => m.meetingType == 'reserved' && !m.isClosed)
-        .toList();
-    result.sort((a, b) => a.startTime.compareTo(b.startTime));
-    return result;
+    return _controller.scheduledReservedMeetings;
   }
 
   List<ReservedMeeting> get _historyMeetings {
-    final result = _reservedMeetings
-        .where((m) => m.meetingType == 'reserved' && m.isClosed)
-        .toList();
-    result.sort((a, b) {
-      final aEnd = a.endedAt ?? a.startTime;
-      final bEnd = b.endedAt ?? b.startTime;
-      return bEnd.compareTo(aEnd);
-    });
-    return result;
+    return _controller.historyMeetings;
   }
 
   @override
   void initState() {
     super.initState();
-    _managerEventSub = _manager.uiEvents.listen(_handleManagerEvent);
-    _fetchReservedMeetings();
+    _controller = HomeController(
+      selfId: widget.selfId,
+      httpMgr: widget.httpMgr,
+    );
+    _controller.addListener(_onControllerUpdate);
+    _controllerEventSub = _controller.uiEvents.listen(_handleControllerEvent);
+    unawaited(_controller.initialize());
     _meetingStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) {
         setState(() {});
@@ -64,29 +56,36 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
-    _managerEventSub?.cancel();
+    _controllerEventSub?.cancel();
     _meetingStatusTimer?.cancel();
+    _controller.removeListener(_onControllerUpdate);
+    _controller.dispose();
     super.dispose();
   }
 
-  void _handleManagerEvent(MeetingUiEvent event) {
-    if (!mounted) return;
+  void _onControllerUpdate() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _handleControllerEvent(HomeUiEvent event) {
+    if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) {
+      return;
+    }
 
     switch (event.type) {
-      case MeetingUiEventType.roomClosed:
-      case MeetingUiEventType.reservationNotice:
-        _fetchReservedMeetings();
+      case HomeUiEventType.showMessage:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(event.message)));
         break;
-      case MeetingUiEventType.signalingError:
-        if (ModalRoute.of(context)?.isCurrent ?? false) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text(event.message)));
+      case HomeUiEventType.joinAndNavigate:
+        final roomId = event.roomId;
+        final isHost = event.isHost ?? true;
+        if (roomId != null && roomId.isNotEmpty) {
+          unawaited(_joinAndNavigate(roomId: roomId, isHost: isHost));
         }
-        break;
-      case MeetingUiEventType.joinSucceeded:
-      case MeetingUiEventType.joinFailed:
-        break;
     }
   }
 
@@ -101,22 +100,7 @@ class _HomePageState extends State<HomePage> {
     );
 
     try {
-      if (!_manager.meetingState.isSignalingConnected ||
-          _manager.selfId != widget.selfId) {
-        await _manager.initializeSignaling(
-          selfId: widget.selfId,
-          signalingUrl: kSignalingUrl,
-        );
-      }
-
-      if (_manager.isInRoom) {
-        final currentRoom = _manager.meetingState.currentRoomId;
-        if (currentRoom != roomId) {
-          await _manager.leaveRoom();
-        }
-      }
-
-      final joinResult = await _manager.joinRoom(
+      final joinResult = await _controller.joinMeeting(
         roomId: roomId,
         isHost: isHost,
       );
@@ -142,59 +126,6 @@ class _HomePageState extends State<HomePage> {
         context,
       ).showSnackBar(SnackBar(content: Text('加入失败: $e')));
     }
-  }
-
-  Future<void> _fetchReservedMeetings() async {
-    try {
-      final meetings = await widget.httpMgr.getUserReservedMeetings(
-        userId: widget.selfId,
-      );
-      setState(() {
-        _reservedMeetings
-          ..clear()
-          ..addAll(meetings);
-      });
-    } on ApiException catch (e) {
-      logger.e('API Error fetching meetings: ${e.message}');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('获取会议列表失败：${e.message}')));
-    } catch (e) {
-      logger.e('Error fetching meetings: $e');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('获取会议列表失败：$e')));
-    }
-  }
-
-  void _upsertReservedMeeting(
-    String roomId,
-    DateTime startTime,
-    String status,
-  ) {
-    final idx = _reservedMeetings.indexWhere((m) => m.roomId == roomId);
-    if (idx >= 0) {
-      _reservedMeetings[idx] = ReservedMeeting(
-        roomId: roomId,
-        startTime: startTime,
-        meetingType: 'reserved',
-        status: status,
-      );
-    } else {
-      _reservedMeetings.add(
-        ReservedMeeting(
-          roomId: roomId,
-          startTime: startTime,
-          meetingType: 'reserved',
-          status: status,
-        ),
-      );
-    }
-
-    _reservedMeetings.sort((a, b) => a.startTime.compareTo(b.startTime));
-    setState(() {});
   }
 
   @override
@@ -299,24 +230,11 @@ class _HomePageState extends State<HomePage> {
               Icons.video_call,
               '快速会议',
               const Color(0xFF0052D9),
-              onTap: () async {
-                final randomRoom =
-                    (100000 + (DateTime.now().millisecondsSinceEpoch % 899999))
-                        .toString();
-                try {
-                  await widget.httpMgr.startQuickMeeting(
-                    userId: widget.selfId,
-                    roomId: randomRoom,
-                  );
-                } catch (e) {
-                  if (!mounted) return;
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text('快速会议记录失败：$e')));
-                  return;
-                }
-                await _joinAndNavigate(roomId: randomRoom, isHost: true);
-              },
+              onTap: _controller.isQuickMeetingStarting
+                  ? null
+                  : () async {
+                      await _controller.quickMeeting();
+                    },
             ),
             _mainCard(
               context,
@@ -731,46 +649,15 @@ class _HomePageState extends State<HomePage> {
                                 : () async {
                                     logger.i('确认会议：$roomId at $finalDateTime');
                                     try {
-                                      await widget.httpMgr.reserveMeeting(
-                                        userId: widget.selfId,
+                                      await _controller.reserveMeeting(
                                         roomId: roomId,
                                         startTime: finalDateTime,
                                       );
 
                                       if (!mounted) return;
-                                      _upsertReservedMeeting(
-                                        roomId,
-                                        finalDateTime,
-                                        'scheduled',
-                                      );
                                       Navigator.pop(dialogContext);
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(
-                                          content: Text('会议预约成功：$roomId'),
-                                        ),
-                                      );
-                                    } on ApiException catch (e) {
-                                      logger.e(
-                                        'API Error reserving meeting: ${e.message}',
-                                      );
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(
-                                          content: Text('预约失败：${e.message}'),
-                                        ),
-                                      );
                                     } catch (e) {
                                       logger.e('Error reserving meeting: $e');
-                                      if (!mounted) return;
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        SnackBar(content: Text('预约失败：$e')),
-                                      );
                                     }
                                   },
                             style: ElevatedButton.styleFrom(

@@ -4,7 +4,7 @@ import 'dart:async';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
-import 'webrtc_mgr.dart';
+import 'meeting_controller.dart';
 
 class MeetingPage extends StatefulWidget {
   final String selfId;
@@ -27,9 +27,9 @@ class MeetingPage extends StatefulWidget {
 }
 
 class _MeetingPageState extends State<MeetingPage> {
-  final WebRTCManager _manager = WebRTCManager();
+  late final MeetingController _controller;
   bool _joinWithMic = false;
-  StreamSubscription<MeetingUiEvent>? _managerEventSub;
+  StreamSubscription<MeetingPageUiEvent>? _controllerEventSub;
 
   static const Color _pageBg = Color(0xFFF6F8FC);
   static const Color _brandBlue = Color(0xFF1677FF);
@@ -39,34 +39,35 @@ class _MeetingPageState extends State<MeetingPage> {
   @override
   void initState() {
     super.initState();
-    _manager.addListener(_onManagerUpdate);
-    _managerEventSub = _manager.uiEvents.listen(_handleManagerEvent);
+    _controller = MeetingController(
+      selfId: widget.selfId,
+      roomId: widget.roomId,
+      isHost: widget.isHost,
+      signalingUrl: widget.signalingUrl,
+      alreadyJoined: widget.alreadyJoined,
+    );
+    _controller.addListener(_onControllerUpdate);
+    _controllerEventSub = _controller.uiEvents.listen(_handleControllerEvent);
+    unawaited(_controller.initialize());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _initializeMeeting();
     });
   }
 
-  void _handleManagerEvent(MeetingUiEvent event) {
+  void _handleControllerEvent(MeetingPageUiEvent event) {
     if (!mounted) return;
 
     switch (event.type) {
-      case MeetingUiEventType.roomClosed:
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(event.message)));
+      case MeetingPageUiEventType.exitPage:
         if (Navigator.of(context).canPop()) {
           Navigator.of(context).pop();
         }
         break;
-      case MeetingUiEventType.joinFailed:
-      case MeetingUiEventType.signalingError:
+      case MeetingPageUiEventType.showMessage:
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(event.message)));
-        break;
-      case MeetingUiEventType.joinSucceeded:
-      case MeetingUiEventType.reservationNotice:
         break;
     }
   }
@@ -86,36 +87,9 @@ class _MeetingPageState extends State<MeetingPage> {
         return;
       }
 
-      // 1. 初始化信令
-      await _manager.initializeSignaling(
-        selfId: widget.selfId,
-        signalingUrl: widget.signalingUrl,
-      );
-
-      // 2. 按用户选择进行设备权限预热，并刷新设备列表
-      await _manager.prepareDevicesForJoin(
-        requestMicPermission: _joinWithMic,
-        requestCameraPermission: false,
-      );
-
-      // 3. 进入房间
-      await _manager.joinRoom(roomId: widget.roomId, isHost: widget.isHost);
-
-      // 4. 仅在用户选择开麦时尝试打开麦克风
-      if (_joinWithMic) {
-        await _manager.toggleMicrophone();
-        if (mounted && !_manager.isMicrophoneOn) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('麦克风权限未授予或设备不可用，已静音入会')));
-        }
-      }
+      await _controller.startMeeting(joinWithMic: _joinWithMic);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('初始化失败: $e')));
-      }
+      // 错误提示由 controller 通过 uiEvents 下发，页面无需重复提示。
     }
   }
 
@@ -262,15 +236,16 @@ class _MeetingPageState extends State<MeetingPage> {
     return result ?? false;
   }
 
-  void _onManagerUpdate() {
+  void _onControllerUpdate() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    _managerEventSub?.cancel();
-    _manager.removeListener(_onManagerUpdate);
-    _manager.leaveRoom();
+    _controllerEventSub?.cancel();
+    _controller.removeListener(_onControllerUpdate);
+    unawaited(_controller.leaveMeeting(endMeetingIfHost: false));
+    _controller.dispose();
     super.dispose();
   }
 
@@ -312,15 +287,15 @@ class _MeetingPageState extends State<MeetingPage> {
       _ParticipantViewModel(
         id: widget.selfId,
         name: '我',
-        renderer: _manager.localRenderer,
-        isVideoOn: _manager.isCameraOn,
-        isAudioOn: _manager.isMicrophoneOn,
+        renderer: _controller.manager.localRenderer,
+        isVideoOn: _controller.manager.isCameraOn,
+        isAudioOn: _controller.manager.isMicrophoneOn,
         isLocal: true,
       ),
     );
 
     // 添加远端用户
-    for (final peer in _manager.remotePeers.values) {
+    for (final peer in _controller.manager.remotePeers.values) {
       list.add(
         _ParticipantViewModel(
           id: peer.id,
@@ -600,30 +575,30 @@ class _MeetingPageState extends State<MeetingPage> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           _buildDeviceControlButton(
-            isOn: _manager.isMicrophoneOn,
+            isOn: _controller.manager.isMicrophoneOn,
             onIcon: Icons.mic_none,
             offIcon: Icons.mic_off,
             label: '音频',
-            onToggle: _manager.toggleMicrophone,
+            onToggle: _controller.manager.toggleMicrophone,
             onSelectDevice: () => _showDevicePicker('microphone'),
           ),
           _buildDeviceControlButton(
-            isOn: _manager.isCameraOn,
+            isOn: _controller.manager.isCameraOn,
             onIcon: Icons.videocam_outlined,
             offIcon: Icons.videocam_off,
             label: '视频',
-            onToggle: _manager.toggleCamera,
-            onSelectDevice: _manager.cameraDevices.isNotEmpty
+            onToggle: _controller.manager.toggleCamera,
+            onSelectDevice: _controller.manager.cameraDevices.isNotEmpty
                 ? () => _showDevicePicker('camera')
                 : () {},
           ),
           _buildToolButton(
-            icon: _manager.isScreenSharing
+            icon: _controller.manager.isScreenSharing
                 ? Icons.screen_share
                 : Icons.screen_share_outlined,
             label: '共享屏幕',
-            isActive: _manager.isScreenSharing,
-            onTap: _manager.toggleScreenSharing,
+            isActive: _controller.manager.isScreenSharing,
+            onTap: _controller.manager.toggleScreenSharing,
           ),
           _buildToolButton(
             icon: Icons.group_outlined,
@@ -812,7 +787,7 @@ class _MeetingPageState extends State<MeetingPage> {
                     child: ElevatedButton(
                       onPressed: () async {
                         Navigator.pop(dialogContext);
-                        await _manager.leaveRoom(endMeetingIfHost: false);
+                        await _controller.leaveMeeting(endMeetingIfHost: false);
                         Navigator.pop(context);
                       },
                       style: ElevatedButton.styleFrom(
@@ -838,7 +813,7 @@ class _MeetingPageState extends State<MeetingPage> {
                   child: ElevatedButton(
                     onPressed: () async {
                       Navigator.pop(dialogContext);
-                      await _manager.leaveRoom(endMeetingIfHost: true);
+                      await _controller.leaveMeeting(endMeetingIfHost: true);
                       if (!mounted) return;
                       Navigator.pop(context);
                     },
@@ -865,7 +840,7 @@ class _MeetingPageState extends State<MeetingPage> {
   }
 
   void _showDevicePicker(String type) async {
-    await _manager.loadDevices(); // 实时获取最新设备
+    await _controller.manager.loadDevices(); // 实时获取最新设备
     if (!mounted) return;
 
     showModalBottomSheet(
@@ -876,7 +851,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
       builder: (context) {
         final List<_DevicePickerItem> devices = type == 'camera'
-            ? _manager.cameraDevices
+            ? _controller.manager.cameraDevices
                   .map(
                     (device) => _DevicePickerItem(
                       deviceId: device.deviceId,
@@ -893,7 +868,7 @@ class _MeetingPageState extends State<MeetingPage> {
                   label: '系统默认麦克风',
                   isDefault: true,
                 ),
-                ..._manager.microphoneDevices.map(
+                ..._controller.manager.microphoneDevices.map(
                   (device) => _DevicePickerItem(
                     deviceId: device.deviceId,
                     label: device.label.isNotEmpty
@@ -956,7 +931,7 @@ class _MeetingPageState extends State<MeetingPage> {
                           ),
                           onTap: () async {
                             Navigator.pop(context);
-                            final available = await _manager
+                            final available = await _controller.manager
                                 .probeMicrophoneAvailability();
                             if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
@@ -975,8 +950,8 @@ class _MeetingPageState extends State<MeetingPage> {
                           : index;
                       final d = devices[deviceIndex];
                       final currentId = type == 'camera'
-                          ? _manager.selectedCameraId
-                          : _manager.selectedMicrophoneId;
+                          ? _controller.manager.selectedCameraId
+                          : _controller.manager.selectedMicrophoneId;
 
                       bool isSelected =
                           currentId != null &&
@@ -1017,9 +992,9 @@ class _MeetingPageState extends State<MeetingPage> {
                           ),
                           onTap: () {
                             if (type == 'camera') {
-                              _manager.switchCamera(d.deviceId);
+                              _controller.manager.switchCamera(d.deviceId);
                             } else if (type == 'microphone') {
-                              _manager.switchMicrophone(d.deviceId);
+                              _controller.manager.switchMicrophone(d.deviceId);
                             }
                             Navigator.pop(context);
                           },
@@ -1062,7 +1037,7 @@ class _MeetingPageState extends State<MeetingPage> {
               ),
               const SizedBox(height: 12),
               Text(
-                '参会成员 (${_manager.remotePeers.length + 1})',
+                '参会成员 (${_controller.manager.remotePeers.length + 1})',
                 style: const TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
@@ -1076,11 +1051,11 @@ class _MeetingPageState extends State<MeetingPage> {
                   children: [
                     _buildParticipantListTile(
                       name: '${widget.selfId} (我)',
-                      audioOn: _manager.isMicrophoneOn,
-                      videoOn: _manager.isCameraOn,
+                      audioOn: _controller.manager.isMicrophoneOn,
+                      videoOn: _controller.manager.isCameraOn,
                       isSelf: true,
                     ),
-                    ..._manager.remotePeers.values.map(
+                    ..._controller.manager.remotePeers.values.map(
                       (peer) => _buildParticipantListTile(
                         name: peer.name,
                         audioOn: peer.isAudioOn,
