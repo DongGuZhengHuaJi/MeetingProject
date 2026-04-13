@@ -12,6 +12,8 @@ import 'webrtc_mgr.dart';
 
 final logger = Logger();
 
+//tofix: 1. 预约会议的本地状态更新（已开始/已结束）
+//tofix: 2. 主持人退出
 class HomePage extends StatefulWidget {
   final String selfId;
   final HttpMgr httpMgr;
@@ -91,7 +93,7 @@ class _HomePageState extends State<HomePage> {
         }
       }
 
-      await manager.joinRoom(roomId: roomId, isHost: isHost);
+      final joinResult = await manager.joinRoom(roomId: roomId, isHost: isHost);
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -101,7 +103,7 @@ class _HomePageState extends State<HomePage> {
           builder: (context) => MeetingPage(
             selfId: widget.selfId,
             roomId: roomId,
-            isHost: isHost,
+            isHost: joinResult.isHost,
             signalingUrl: kSignalingUrl,
             alreadyJoined: true,
           ),

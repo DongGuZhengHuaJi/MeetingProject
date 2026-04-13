@@ -9,6 +9,20 @@ import 'peer_models.dart';
 import 'websocket_mgr.dart';
 import 'http_mgr.dart';
 
+class JoinRoomResult {
+  final String roomId;
+  final bool isHost;
+  final String? hostId;
+  final String? meetingType;
+
+  const JoinRoomResult({
+    required this.roomId,
+    required this.isHost,
+    this.hostId,
+    this.meetingType,
+  });
+}
+
 /// WebRTC 会议管理器
 /// 
 /// 职责：
@@ -43,7 +57,7 @@ class WebRTCManager extends ChangeNotifier {
   MeetingState _meetingState = const MeetingState();
   final Map<String, RemotePeer> _remotePeers = {};
   StreamSubscription<String>? _wsSubscription;
-  Completer<void>? _joinAckCompleter;
+  Completer<JoinRoomResult>? _joinAckCompleter;
   String? _pendingJoinRoomId;
   
   // ==================== 常量配置 ====================
@@ -132,7 +146,7 @@ class WebRTCManager extends ChangeNotifier {
   /// 
   /// [roomId] 房间号
   /// [isHost] 是否为创建者（房主）
-  Future<void> joinRoom({
+  Future<JoinRoomResult> joinRoom({
     required String roomId,
     bool isHost = false,
   }) async {
@@ -152,9 +166,10 @@ class WebRTCManager extends ChangeNotifier {
       _sendSignalingMessage({
         'type': isHost ? 'create' : 'join',
         'room': roomId,
+        'from': _selfId,
       });
 
-      await _waitForJoinAck(roomId: roomId);
+      final joinResult = await _waitForJoinAck(roomId: roomId);
       
       _updateMeetingState(
         isInRoom: true,
@@ -184,8 +199,10 @@ class WebRTCManager extends ChangeNotifier {
       }
 
       logger.i('🚪 已进入房间: $roomId');
+      logger.i('🪪 服务端确认房主身份: ${joinResult.isHost}');
       logger.i('📱 可用设备 - 摄像头: ${_cameraDevices.length}, 麦克风: ${_microphoneDevices.length}');
       logger.i('🎥 默认摄像头: ${_selectedCameraId ?? "无"}, 🎤 默认麦克风: ${_selectedMicrophoneId ?? "无"}');
+      return joinResult;
       
     } catch (e) {
       logger.e('❌ 进入房间失败: $e');
@@ -923,7 +940,7 @@ class WebRTCManager extends ChangeNotifier {
     _remotePeers.clear();
   }
 
-  Future<void> _waitForJoinAck({
+  Future<JoinRoomResult> _waitForJoinAck({
     required String roomId,
     Duration timeout = const Duration(seconds: 8),
   }) async {
@@ -931,12 +948,12 @@ class WebRTCManager extends ChangeNotifier {
       _joinAckCompleter!.completeError(StateError('Previous join request interrupted'));
     }
 
-    final completer = Completer<void>();
+    final completer = Completer<JoinRoomResult>();
     _joinAckCompleter = completer;
     _pendingJoinRoomId = roomId;
 
     try {
-      await completer.future.timeout(timeout);
+      return await completer.future.timeout(timeout);
     } on TimeoutException {
       if (identical(_joinAckCompleter, completer)) {
         _joinAckCompleter = null;
@@ -946,20 +963,29 @@ class WebRTCManager extends ChangeNotifier {
     }
   }
 
-  void _resolveJoinAckSuccess(String? roomId) {
+  void _resolveJoinAckSuccess(Map<String, dynamic> data) {
     final completer = _joinAckCompleter;
     if (completer == null || completer.isCompleted) {
       return;
     }
+
+    final roomId = data['room_id']?.toString();
 
     if (roomId != null && _pendingJoinRoomId != null && roomId != _pendingJoinRoomId) {
       logger.w('Ignoring join ack for unexpected room: $roomId (expect: $_pendingJoinRoomId)');
       return;
     }
 
+    final result = JoinRoomResult(
+      roomId: roomId ?? (_pendingJoinRoomId ?? ''),
+      isHost: data['is_host'] == true,
+      hostId: data['host_id']?.toString(),
+      meetingType: data['meeting_type']?.toString(),
+    );
+
     _joinAckCompleter = null;
     _pendingJoinRoomId = null;
-    completer.complete();
+    completer.complete(result);
   }
 
   void _resolveJoinAckError(String message) {
@@ -1034,7 +1060,7 @@ class WebRTCManager extends ChangeNotifier {
 
         case 'create_room_success':
         case 'join_room_success':
-          _resolveJoinAckSuccess(data['room_id']?.toString());
+          _resolveJoinAckSuccess(data);
           break;
           
         case 'user_joined':
