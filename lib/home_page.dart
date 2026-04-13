@@ -29,11 +29,11 @@ class _HomePageState extends State<HomePage> {
   Timer? _meetingStatusTimer;
   StreamSubscription<HomeUiEvent>? _controllerEventSub;
 
-  List<ReservedMeeting> get _scheduledReservedMeetings {
-    return _controller.scheduledReservedMeetings;
+  List<Meeting> get _scheduledMeetings {
+    return _controller.scheduledMeetings;
   }
 
-  List<ReservedMeeting> get _historyMeetings {
+  List<Meeting> get _historyMeetings {
     return _controller.historyMeetings;
   }
 
@@ -296,7 +296,7 @@ class _HomePageState extends State<HomePage> {
           ),
           const SizedBox(height: 12),
           _buildMeetingSection(
-            meetings: _scheduledReservedMeetings,
+            meetings: _scheduledMeetings,
             emptyText: '暂无预约会议',
           ),
           const SizedBox(height: 16),
@@ -739,18 +739,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildMeetingSection({
-    required List<ReservedMeeting> meetings,
+    required List<Meeting> meetings,
     required String emptyText,
   }) {
     if (meetings.isEmpty) {
       return Container(
         height: 120,
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: const Color(0xFFF7FAFF),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
-        ),
         child: Text(
           emptyText,
           style: const TextStyle(color: Colors.grey, fontSize: 13),
@@ -768,7 +763,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildMeetingCard(ReservedMeeting meeting) {
+  Widget _buildMeetingCard(Meeting meeting) {
     final startText = DateFormat('yyyy-MM-dd HH:mm').format(meeting.startTime);
     final endText = meeting.endedAt == null
         ? null
@@ -779,66 +774,148 @@ class _HomePageState extends State<HomePage> {
     final statusColor = meeting.isClosed
         ? const Color(0xFF8C8C8C)
         : (started ? const Color(0xFF18A058) : const Color(0xFF1677FF));
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7FAFF),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.schedule, size: 18, color: Color(0xFF0052D9)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '房间号 ${meeting.roomId}',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF1D2129),
+    return InkWell(
+      onTap: () {
+        if (statusText != '已开始') return;
+        _showTipDialog('加入会议', '您确定要加入房间 ${meeting.roomId} 的会议吗？', () async {
+          await _joinAndNavigate(roomId: meeting.roomId, isHost: false);
+        }, null);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF7FAFF),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.schedule, size: 18, color: Color(0xFF0052D9)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '房间号 ${meeting.roomId}',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF1D2129),
+                          ),
                         ),
                       ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: statusColor.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        statusText,
-                        style: TextStyle(
-                          color: statusColor,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: statusColor.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          statusText,
+                          style: TextStyle(
+                            color: statusColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '开始: $startText',
-                  style: const TextStyle(fontSize: 12, color: Colors.black54),
-                ),
-                if (endText != null)
-                  Text(
-                    '结束: $endText${meeting.endReason == null ? '' : '（${meeting.endReason}）'}',
-                    style: const TextStyle(fontSize: 12, color: Colors.black45),
+                    ],
                   ),
-              ],
+                  const SizedBox(height: 2),
+                  Text(
+                    '开始: $startText',
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                  if (endText != null)
+                    Text(
+                      '结束: $endText${meeting.endReason == null ? '' : '（${meeting.endReason}）'}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black45,
+                      ),
+                    ),
+                ],
+              ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showTipDialog(
+    String title,
+    String content,
+    VoidCallback? onConfirm,
+    VoidCallback? onCancel,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: const BorderSide(color: Color(0xFFE2E8F0)),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            color: Color(0xFF1D2129),
+            fontWeight: FontWeight.w700,
+            fontSize: 18,
+          ),
+        ),
+        content: Text(
+          content,
+          style: const TextStyle(
+            color: Color(0xFF4E5969),
+            fontSize: 14,
+            height: 1.45,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              if (onConfirm != null) {
+                onConfirm();
+              }
+            },
+            style: TextButton.styleFrom(
+              backgroundColor: const Color(0xFF0052D9),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            child: const Text('确定'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              if (onCancel != null) {
+                onCancel();
+              }
+            },
+            style: TextButton.styleFrom(
+              backgroundColor: const Color(0xFFF7FAFF),
+              foregroundColor: const Color(0xFF0052D9),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+                side: const BorderSide(color: Color(0xFFB7D0F8)),
+              ),
+            ),
+            child: const Text('取消'),
           ),
         ],
       ),

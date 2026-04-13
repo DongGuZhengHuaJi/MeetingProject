@@ -33,7 +33,7 @@ class HomeController extends ChangeNotifier {
     WebRTCManager? manager,
   }) : manager = manager ?? WebRTCManager();
 
-  final List<ReservedMeeting> _reservedMeetings = [];
+  final List<Meeting> _meetings = [];
   final StreamController<HomeUiEvent> _uiEventController =
       StreamController<HomeUiEvent>.broadcast();
 
@@ -43,18 +43,16 @@ class HomeController extends ChangeNotifier {
   Stream<HomeUiEvent> get uiEvents => _uiEventController.stream;
   bool get isQuickMeetingStarting => _isQuickMeetingStarting;
 
-  List<ReservedMeeting> get scheduledReservedMeetings {
-    final result = _reservedMeetings
+  List<Meeting> get scheduledMeetings {
+    final result = _meetings
         .where((m) => m.meetingType == 'reserved' && !m.isClosed)
         .toList();
     result.sort((a, b) => a.startTime.compareTo(b.startTime));
     return result;
   }
 
-  List<ReservedMeeting> get historyMeetings {
-    final result = _reservedMeetings
-        .where((m) => m.meetingType == 'reserved' && m.isClosed)
-        .toList();
+  List<Meeting> get historyMeetings {
+    final result = _meetings.where((m) => m.isClosed).toList();
     result.sort((a, b) {
       final aEnd = a.endedAt ?? a.startTime;
       final bEnd = b.endedAt ?? b.startTime;
@@ -65,13 +63,13 @@ class HomeController extends ChangeNotifier {
 
   Future<void> initialize() async {
     _managerEventSub = manager.uiEvents.listen(_handleManagerEvent);
-    await fetchReservedMeetings();
+    await fetchMeetings();
   }
 
-  Future<void> fetchReservedMeetings() async {
+  Future<void> fetchMeetings() async {
     try {
-      final meetings = await httpMgr.getUserReservedMeetings(userId: selfId);
-      _reservedMeetings
+      final meetings = await httpMgr.getUserMeetings(userId: selfId);
+      _meetings
         ..clear()
         ..addAll(meetings);
       notifyListeners();
@@ -99,10 +97,11 @@ class HomeController extends ChangeNotifier {
         roomId: roomId,
         startTime: startTime,
       );
-      _upsertReservedMeeting(
+      _upsertMeeting(
         roomId: roomId,
         startTime: startTime,
         status: 'scheduled',
+        meetingType: 'reserved',
       );
       _emitUiEvent(
         HomeUiEvent(
@@ -180,31 +179,32 @@ class HomeController extends ChangeNotifier {
     return manager.joinRoom(roomId: roomId, isHost: isHost);
   }
 
-  void _upsertReservedMeeting({
+  void _upsertMeeting({
     required String roomId,
     required DateTime startTime,
     required String status,
+    required String meetingType,
   }) {
-    final idx = _reservedMeetings.indexWhere((m) => m.roomId == roomId);
+    final idx = _meetings.indexWhere((m) => m.roomId == roomId);
     if (idx >= 0) {
-      _reservedMeetings[idx] = ReservedMeeting(
+      _meetings[idx] = Meeting(
         roomId: roomId,
         startTime: startTime,
-        meetingType: 'reserved',
+        meetingType: meetingType,
         status: status,
       );
     } else {
-      _reservedMeetings.add(
-        ReservedMeeting(
+      _meetings.add(
+        Meeting(
           roomId: roomId,
           startTime: startTime,
-          meetingType: 'reserved',
+          meetingType: meetingType,
           status: status,
         ),
       );
     }
 
-    _reservedMeetings.sort((a, b) => a.startTime.compareTo(b.startTime));
+    _meetings.sort((a, b) => a.startTime.compareTo(b.startTime));
     notifyListeners();
   }
 
@@ -212,7 +212,7 @@ class HomeController extends ChangeNotifier {
     switch (event.type) {
       case MeetingUiEventType.roomClosed:
       case MeetingUiEventType.reservationNotice:
-        unawaited(fetchReservedMeetings());
+        unawaited(fetchMeetings());
         break;
       case MeetingUiEventType.signalingError:
         _emitUiEvent(

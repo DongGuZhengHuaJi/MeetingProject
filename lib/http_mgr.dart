@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:async';
 import 'app_env.dart';
 
-class ReservedMeeting{
+class Meeting {
   final String roomId;
   final DateTime startTime;
   final String meetingType;
@@ -11,7 +11,7 @@ class ReservedMeeting{
   final DateTime? endedAt;
   final String? endReason;
 
-  ReservedMeeting({
+  Meeting({
     required this.roomId,
     required this.startTime,
     required this.meetingType,
@@ -85,9 +85,11 @@ class HttpMgr {
     timeout: const Duration(seconds: 12),
   );
   factory HttpMgr.instance() => _instance;
-  HttpMgr._internal(this.baseUrl, {this.timeout = const Duration(seconds: 8), HttpClient? client})
-      : _client = client ?? HttpClient();
-
+  HttpMgr._internal(
+    this.baseUrl, {
+    this.timeout = const Duration(seconds: 8),
+    HttpClient? client,
+  }) : _client = client ?? HttpClient();
 
   String? get accessToken => _accessToken;
   String? get refreshToken => _refreshToken;
@@ -138,17 +140,14 @@ class HttpMgr {
     return tokens;
   }
 
-  Future<List<ReservedMeeting>> getUserReservedMeetings({required String userId}) async {
+  Future<List<Meeting>> getUserMeetings({required String userId}) async {
     final rsp = await _postWithRetry(
-      action: 'get_user_reservations',
-      body: {
-        'from': userId,
-        'access_token': _accessToken,
-      },
+      action: 'get_user_meetings',
+      body: {'from': userId, 'access_token': _accessToken},
       maxAttempts: 2,
     );
-    
-    if(rsp['error'] != null) {
+
+    if (rsp['error'] != null) {
       throw ApiException(
         rsp['error'].toString(),
         statusCode: rsp['status_code'] as int?,
@@ -156,14 +155,22 @@ class HttpMgr {
     }
 
     final List<dynamic> reservations = rsp['reservations'] ?? [];
-    return reservations.map((r) => ReservedMeeting(
-      roomId: r['room'] as String,
-      startTime: _parseServerDateTime(r['time']),
-      meetingType: (r['meeting_type'] ?? 'reserved').toString(),
-      status: r['status'] as String,
-      endedAt: _parseNullableServerDateTime(r['ended_at']),
-      endReason: _parseNullableString(r['end_reason']),
-    )).toList();
+    return reservations
+        .map(
+          (r) => Meeting(
+            roomId: r['room'] as String,
+            startTime: _parseServerDateTime(r['time']),
+            meetingType: (r['meeting_type'] ?? 'reserved').toString(),
+            status: r['status'] as String,
+            endedAt: _parseNullableServerDateTime(r['ended_at']),
+            endReason: _parseNullableString(r['end_reason']),
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<Meeting>> getUserReservedMeetings({required String userId}) {
+    return getUserMeetings(userId: userId);
   }
 
   Future<void> startQuickMeeting({
@@ -173,12 +180,25 @@ class HttpMgr {
     await postWithAccessToken(
       action: 'quick_meeting_start',
       userId: userId,
-      payload: {
-        'from': userId,
-        'room': roomId,
-      },
+      payload: {'from': userId, 'room': roomId},
     );
   }
+
+  // Future<void> endMeeting({
+  //   required String userId,
+  //   required String roomId,
+  //   String? reason,
+  // }) async {
+  //   await postWithAccessToken(
+  //     action: 'end_meeting',
+  //     userId: userId,
+  //     payload: {
+  //       'from': userId,
+  //       'room': roomId,
+  //       if (reason != null) 'reason': reason,
+  //     },
+  //   );
+  // }
 
   static DateTime _parseServerDateTime(dynamic value) {
     final raw = (value ?? '').toString().trim();
@@ -213,7 +233,11 @@ class HttpMgr {
     await postWithAccessToken(
       action: 'reserve',
       userId: userId,
-      payload: {'from': userId, 'room': roomId, 'time': startTime.toIso8601String()},
+      payload: {
+        'from': userId,
+        'room': roomId,
+        'time': startTime.toIso8601String(),
+      },
     );
   }
 
@@ -224,7 +248,10 @@ class HttpMgr {
     _tokenRefreshTimer?.cancel();
     _tokenRefreshTimer = null;
 
-    if (_accessToken == null || _refreshToken == null || accessExpiresIn == null || accessExpiresIn <= 0) {
+    if (_accessToken == null ||
+        _refreshToken == null ||
+        accessExpiresIn == null ||
+        accessExpiresIn <= 0) {
       return;
     }
 
