@@ -1,9 +1,10 @@
 // pages/meeting_page.dart
+import 'dart:async';
+
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'webrtc_mgr.dart';
-
 
 class MeetingPage extends StatefulWidget {
   final String selfId;
@@ -28,23 +29,48 @@ class MeetingPage extends StatefulWidget {
 class _MeetingPageState extends State<MeetingPage> {
   final WebRTCManager _manager = WebRTCManager();
   bool _joinWithMic = false;
-  bool _errorSnackBarShown = false;
+  StreamSubscription<MeetingUiEvent>? _managerEventSub;
 
   static const Color _pageBg = Color(0xFFF6F8FC);
   static const Color _brandBlue = Color(0xFF1677FF);
   static const Color _textPrimary = Color(0xFF1F2329);
   static const Color _textSecondary = Color(0xFF6B7280);
-  
+
   @override
   void initState() {
     super.initState();
     _manager.addListener(_onManagerUpdate);
+    _managerEventSub = _manager.uiEvents.listen(_handleManagerEvent);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _initializeMeeting();
     });
   }
-  
+
+  void _handleManagerEvent(MeetingUiEvent event) {
+    if (!mounted) return;
+
+    switch (event.type) {
+      case MeetingUiEventType.roomClosed:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(event.message)));
+        if (Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+        break;
+      case MeetingUiEventType.joinFailed:
+      case MeetingUiEventType.signalingError:
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(event.message)));
+        break;
+      case MeetingUiEventType.joinSucceeded:
+      case MeetingUiEventType.reservationNotice:
+        break;
+    }
+  }
+
   /// 初始化会议
   Future<void> _initializeMeeting() async {
     try {
@@ -71,28 +97,24 @@ class _MeetingPageState extends State<MeetingPage> {
         requestMicPermission: _joinWithMic,
         requestCameraPermission: false,
       );
-      
+
       // 3. 进入房间
-      await _manager.joinRoom(
-        roomId: widget.roomId,
-        isHost: widget.isHost,
-      );
+      await _manager.joinRoom(roomId: widget.roomId, isHost: widget.isHost);
 
       // 4. 仅在用户选择开麦时尝试打开麦克风
       if (_joinWithMic) {
         await _manager.toggleMicrophone();
         if (mounted && !_manager.isMicrophoneOn) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('麦克风权限未授予或设备不可用，已静音入会')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('麦克风权限未授予或设备不可用，已静音入会')));
         }
       }
-      
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('初始化失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('初始化失败: $e')));
       }
     }
   }
@@ -139,7 +161,10 @@ class _MeetingPageState extends State<MeetingPage> {
                     ),
                     const SizedBox(height: 16),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF8FAFD),
                         borderRadius: BorderRadius.circular(12),
@@ -187,7 +212,8 @@ class _MeetingPageState extends State<MeetingPage> {
                       children: [
                         Expanded(
                           child: OutlinedButton(
-                            onPressed: () => Navigator.of(dialogContext).pop(false),
+                            onPressed: () =>
+                                Navigator.of(dialogContext).pop(false),
                             style: OutlinedButton.styleFrom(
                               minimumSize: const Size.fromHeight(42),
                               side: const BorderSide(color: Color(0xFFD9E1EE)),
@@ -235,13 +261,14 @@ class _MeetingPageState extends State<MeetingPage> {
 
     return result ?? false;
   }
-  
+
   void _onManagerUpdate() {
     if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _managerEventSub?.cancel();
     _manager.removeListener(_onManagerUpdate);
     _manager.leaveRoom();
     super.dispose();
@@ -249,21 +276,6 @@ class _MeetingPageState extends State<MeetingPage> {
 
   @override
   Widget build(BuildContext context) {
-    final state = _manager.meetingState;
-    
-    // 处理错误
-    if (state.errorMessage != null && !_errorSnackBarShown) {
-      _errorSnackBarShown = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(state.errorMessage!)),
-        );
-        _manager.clearMeetingError();
-        _errorSnackBarShown = false;
-      });
-    }
-    
     // 构建参会者列表
     final participants = _buildParticipantList();
     final allVideosOff = participants.every((p) => !p.isVideoOn);
@@ -290,34 +302,37 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
-  
-  
+
   /// 构建参会者列表（本地 + 远端）
   List<_ParticipantViewModel> _buildParticipantList() {
     final List<_ParticipantViewModel> list = [];
-    
+
     // 添加自己
-    list.add(_ParticipantViewModel(
-      id: widget.selfId,
-      name: '我',
-      renderer: _manager.localRenderer,
-      isVideoOn: _manager.isCameraOn,
-      isAudioOn: _manager.isMicrophoneOn,
-      isLocal: true,
-    ));
-    
+    list.add(
+      _ParticipantViewModel(
+        id: widget.selfId,
+        name: '我',
+        renderer: _manager.localRenderer,
+        isVideoOn: _manager.isCameraOn,
+        isAudioOn: _manager.isMicrophoneOn,
+        isLocal: true,
+      ),
+    );
+
     // 添加远端用户
     for (final peer in _manager.remotePeers.values) {
-      list.add(_ParticipantViewModel(
-        id: peer.id,
-        name: peer.name,
-        renderer: peer.renderer,
-        isVideoOn: peer.isVideoOn,
-        isAudioOn: peer.isAudioOn,
-        isLocal: false,
-      ));
+      list.add(
+        _ParticipantViewModel(
+          id: peer.id,
+          name: peer.name,
+          renderer: peer.renderer,
+          isVideoOn: peer.isVideoOn,
+          isAudioOn: peer.isAudioOn,
+          isLocal: false,
+        ),
+      );
     }
-    
+
     return list;
   }
 
@@ -352,7 +367,11 @@ class _MeetingPageState extends State<MeetingPage> {
                 color: const Color(0xFFEAF2FF),
                 borderRadius: BorderRadius.circular(9),
               ),
-              child: const Icon(Icons.videocam_rounded, color: _brandBlue, size: 18),
+              child: const Icon(
+                Icons.videocam_rounded,
+                color: _brandBlue,
+                size: 18,
+              ),
             ),
             const SizedBox(width: 10),
             Text(
@@ -366,7 +385,11 @@ class _MeetingPageState extends State<MeetingPage> {
             const Spacer(),
             // 窗口操作按钮
             IconButton(
-              icon: const Icon(Icons.minimize, color: Color(0xFF6B7280), size: 18),
+              icon: const Icon(
+                Icons.minimize,
+                color: Color(0xFF6B7280),
+                size: 18,
+              ),
               onPressed: () => windowManager.minimize(),
             ),
             IconButton(
@@ -395,7 +418,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
-  
+
   Widget _buildAvatarItem(_ParticipantViewModel p) {
     return Container(
       width: 150,
@@ -422,7 +445,9 @@ class _MeetingPageState extends State<MeetingPage> {
             children: [
               Icon(
                 p.isAudioOn ? Icons.mic : Icons.mic_off,
-                color: p.isAudioOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
+                color: p.isAudioOn
+                    ? const Color(0xFF18A058)
+                    : const Color(0xFFE6504F),
                 size: 14,
               ),
               const SizedBox(width: 5),
@@ -441,14 +466,15 @@ class _MeetingPageState extends State<MeetingPage> {
     );
   }
 
-/// 有人开启视频时显示视频网格
+  /// 有人开启视频时显示视频网格
   Widget _buildVideoGrid(List<_ParticipantViewModel> participants) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final count = participants.length;
-        
+
         // 1. 获取精准的可用区域比例（自动剔除了 AppBar 和 BottomBar 的高度）
-        final exactAvailableRatio = constraints.maxWidth / constraints.maxHeight;
+        final exactAvailableRatio =
+            constraints.maxWidth / constraints.maxHeight;
         const videoAspectRatio = 16 / 9;
 
         double currentRatio;
@@ -463,8 +489,8 @@ class _MeetingPageState extends State<MeetingPage> {
 
         return GridView.builder(
           padding: EdgeInsets.zero,
-          physics: count <= 2 
-              ? const NeverScrollableScrollPhysics() 
+          physics: count <= 2
+              ? const NeverScrollableScrollPhysics()
               : const AlwaysScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: count <= 1 ? 1 : 2,
@@ -493,10 +519,7 @@ class _MeetingPageState extends State<MeetingPage> {
         children: [
           // 只有当视频开启且渲染器存在时才尝试渲染
           if (p.isVideoOn && p.renderer != null)
-            _VideoRendererView(
-              renderer: p.renderer!,
-              isLocal: p.isLocal,
-            )
+            _VideoRendererView(renderer: p.renderer!, isLocal: p.isLocal)
           else
             Center(child: _buildCircularAvatar(p.name, 60)),
           // 信息浮层
@@ -514,7 +537,9 @@ class _MeetingPageState extends State<MeetingPage> {
                 children: [
                   Icon(
                     p.isAudioOn ? Icons.mic : Icons.mic_off,
-                    color: p.isAudioOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
+                    color: p.isAudioOn
+                        ? const Color(0xFF18A058)
+                        : const Color(0xFFE6504F),
                     size: 10,
                   ),
                   const SizedBox(width: 4),
@@ -530,7 +555,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
-  
+
   Widget _buildCircularAvatar(String name, double size) {
     return Container(
       width: size,
@@ -556,9 +581,7 @@ class _MeetingPageState extends State<MeetingPage> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border(
-          top: BorderSide(color: Colors.black.withOpacity(0.05)),
-        ),
+        border: Border(top: BorderSide(color: Colors.black.withOpacity(0.05))),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.04),
@@ -577,23 +600,27 @@ class _MeetingPageState extends State<MeetingPage> {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           _buildDeviceControlButton(
-            isOn: _manager.isMicrophoneOn, 
-            onIcon: Icons.mic_none, 
-            offIcon: Icons.mic_off, 
-            label: '音频', 
-            onToggle: _manager.toggleMicrophone, 
+            isOn: _manager.isMicrophoneOn,
+            onIcon: Icons.mic_none,
+            offIcon: Icons.mic_off,
+            label: '音频',
+            onToggle: _manager.toggleMicrophone,
             onSelectDevice: () => _showDevicePicker('microphone'),
           ),
           _buildDeviceControlButton(
-            isOn: _manager.isCameraOn, 
-            onIcon: Icons.videocam_outlined, 
-            offIcon: Icons.videocam_off, 
-            label: '视频', 
-            onToggle: _manager.toggleCamera, 
-            onSelectDevice: _manager.cameraDevices.isNotEmpty ? () => _showDevicePicker('camera') : () {},
+            isOn: _manager.isCameraOn,
+            onIcon: Icons.videocam_outlined,
+            offIcon: Icons.videocam_off,
+            label: '视频',
+            onToggle: _manager.toggleCamera,
+            onSelectDevice: _manager.cameraDevices.isNotEmpty
+                ? () => _showDevicePicker('camera')
+                : () {},
           ),
           _buildToolButton(
-            icon: _manager.isScreenSharing ? Icons.screen_share : Icons.screen_share_outlined,
+            icon: _manager.isScreenSharing
+                ? Icons.screen_share
+                : Icons.screen_share_outlined,
             label: '共享屏幕',
             isActive: _manager.isScreenSharing,
             onTap: _manager.toggleScreenSharing,
@@ -617,7 +644,9 @@ class _MeetingPageState extends State<MeetingPage> {
     required VoidCallback onTap,
   }) {
     final iconColor = isActive ? _brandBlue : _textPrimary;
-    final bgColor = isActive ? const Color(0xFFEAF2FF) : const Color(0xFFF3F5F9);
+    final bgColor = isActive
+        ? const Color(0xFFEAF2FF)
+        : const Color(0xFFF3F5F9);
 
     return InkWell(
       borderRadius: BorderRadius.circular(14),
@@ -637,10 +666,7 @@ class _MeetingPageState extends State<MeetingPage> {
               child: Icon(icon, color: iconColor, size: 22),
             ),
             const SizedBox(height: 6),
-            Text(
-              label,
-              style: TextStyle(color: iconColor, fontSize: 11),
-            ),
+            Text(label, style: TextStyle(color: iconColor, fontSize: 11)),
           ],
         ),
       ),
@@ -677,21 +703,26 @@ class _MeetingPageState extends State<MeetingPage> {
                     color: bgColor,
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  child: Icon(isOn ? onIcon : offIcon, color: iconColor, size: 22),
+                  child: Icon(
+                    isOn ? onIcon : offIcon,
+                    color: iconColor,
+                    size: 22,
+                  ),
                 ),
               ),
               const SizedBox(width: 2),
               GestureDetector(
                 onTap: onSelectDevice,
-                child: const Icon(Icons.keyboard_arrow_up, color: _textSecondary, size: 16),
+                child: const Icon(
+                  Icons.keyboard_arrow_up,
+                  color: _textSecondary,
+                  size: 16,
+                ),
               ),
             ],
           ),
           const SizedBox(height: 6),
-          Text(
-            label,
-            style: TextStyle(color: iconColor, fontSize: 11),
-          ),
+          Text(label, style: TextStyle(color: iconColor, fontSize: 11)),
         ],
       ),
     );
@@ -718,7 +749,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
-  
+
   void _showLeaveConfirmDialog() {
     showDialog(
       context: context,
@@ -754,9 +785,7 @@ class _MeetingPageState extends State<MeetingPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                widget.isHost
-                    ? '你是房主，可选择仅离开或直接结束会议。'
-                    : '确定要离开当前会议吗？',
+                widget.isHost ? '你是房主，可选择仅离开或直接结束会议。' : '确定要离开当前会议吗？',
                 style: const TextStyle(color: _textSecondary, fontSize: 14),
               ),
               const SizedBox(height: 18),
@@ -834,7 +863,7 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
-  
+
   void _showDevicePicker(String type) async {
     await _manager.loadDevices(); // 实时获取最新设备
     if (!mounted) return;
@@ -848,14 +877,16 @@ class _MeetingPageState extends State<MeetingPage> {
       builder: (context) {
         final List<_DevicePickerItem> devices = type == 'camera'
             ? _manager.cameraDevices
-                .map(
-                  (device) => _DevicePickerItem(
-                    deviceId: device.deviceId,
-                    label: device.label.isNotEmpty ? device.label : device.deviceId,
-                    isDefault: false,
-                  ),
-                )
-                .toList()
+                  .map(
+                    (device) => _DevicePickerItem(
+                      deviceId: device.deviceId,
+                      label: device.label.isNotEmpty
+                          ? device.label
+                          : device.deviceId,
+                      isDefault: false,
+                    ),
+                  )
+                  .toList()
             : [
                 const _DevicePickerItem(
                   deviceId: 'default',
@@ -865,7 +896,9 @@ class _MeetingPageState extends State<MeetingPage> {
                 ..._manager.microphoneDevices.map(
                   (device) => _DevicePickerItem(
                     deviceId: device.deviceId,
-                    label: device.label.isNotEmpty ? device.label : device.deviceId,
+                    label: device.label.isNotEmpty
+                        ? device.label
+                        : device.deviceId,
                     isDefault: false,
                   ),
                 ),
@@ -900,57 +933,88 @@ class _MeetingPageState extends State<MeetingPage> {
                 Flexible(
                   child: ListView.builder(
                     shrinkWrap: true,
-                    itemCount: type == 'microphone' ? devices.length + 1 : devices.length,
+                    itemCount: type == 'microphone'
+                        ? devices.length + 1
+                        : devices.length,
                     itemBuilder: (context, index) {
                       if (type == 'microphone' && index == 0) {
                         return ListTile(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                           leading: const Icon(Icons.hearing, color: _brandBlue),
-                          title: const Text('测试系统默认麦克风', style: TextStyle(color: _textPrimary)),
+                          title: const Text(
+                            '测试系统默认麦克风',
+                            style: TextStyle(color: _textPrimary),
+                          ),
                           subtitle: const Text(
                             '会短暂打开再立即关闭，用于检测是否可用',
-                            style: TextStyle(color: _textSecondary, fontSize: 12),
+                            style: TextStyle(
+                              color: _textSecondary,
+                              fontSize: 12,
+                            ),
                           ),
                           onTap: () async {
                             Navigator.pop(context);
-                            final available = await _manager.probeMicrophoneAvailability();
+                            final available = await _manager
+                                .probeMicrophoneAvailability();
                             if (!mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text(available ? '系统默认麦克风可用' : '系统默认麦克风不可用'),
+                                content: Text(
+                                  available ? '系统默认麦克风可用' : '系统默认麦克风不可用',
+                                ),
                               ),
                             );
                           },
                         );
                       }
 
-                      final deviceIndex = type == 'microphone' ? index - 1 : index;
+                      final deviceIndex = type == 'microphone'
+                          ? index - 1
+                          : index;
                       final d = devices[deviceIndex];
-                      final currentId = type == 'camera' ? _manager.selectedCameraId : _manager.selectedMicrophoneId;
+                      final currentId = type == 'camera'
+                          ? _manager.selectedCameraId
+                          : _manager.selectedMicrophoneId;
 
-                      bool isSelected = currentId != null &&
+                      bool isSelected =
+                          currentId != null &&
                           currentId.isNotEmpty &&
                           d.deviceId.isNotEmpty &&
                           currentId == d.deviceId;
-                      if (type == 'microphone' && d.isDefault && (currentId == null || currentId == 'default')) {
+                      if (type == 'microphone' &&
+                          d.isDefault &&
+                          (currentId == null || currentId == 'default')) {
                         isSelected = true;
                       }
 
                       return Container(
                         margin: const EdgeInsets.only(bottom: 6),
                         decoration: BoxDecoration(
-                          color: isSelected ? const Color(0xFFEFF5FF) : const Color(0xFFF8FAFD),
+                          color: isSelected
+                              ? const Color(0xFFEFF5FF)
+                              : const Color(0xFFF8FAFD),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(
-                            color: isSelected ? const Color(0xFFBFD7FF) : const Color(0xFFE7ECF5),
+                            color: isSelected
+                                ? const Color(0xFFBFD7FF)
+                                : const Color(0xFFE7ECF5),
                           ),
                         ),
                         child: ListTile(
                           leading: Icon(
-                            isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
-                            color: isSelected ? _brandBlue : const Color(0xFFB6BFCC),
+                            isSelected
+                                ? Icons.check_circle
+                                : Icons.radio_button_unchecked,
+                            color: isSelected
+                                ? _brandBlue
+                                : const Color(0xFFB6BFCC),
                           ),
-                          title: Text(d.label, style: const TextStyle(color: _textPrimary)),
+                          title: Text(
+                            d.label,
+                            style: const TextStyle(color: _textPrimary),
+                          ),
                           onTap: () {
                             if (type == 'camera') {
                               _manager.switchCamera(d.deviceId);
@@ -1050,7 +1114,9 @@ class _MeetingPageState extends State<MeetingPage> {
       child: ListTile(
         leading: CircleAvatar(
           radius: 16,
-          backgroundColor: isSelf ? const Color(0xFFEAF2FF) : const Color(0xFFEFF2F7),
+          backgroundColor: isSelf
+              ? const Color(0xFFEAF2FF)
+              : const Color(0xFFEFF2F7),
           child: Icon(
             isSelf ? Icons.person : Icons.person_outline,
             size: 16,
@@ -1067,13 +1133,17 @@ class _MeetingPageState extends State<MeetingPage> {
             Icon(
               audioOn ? Icons.mic : Icons.mic_off,
               size: 19,
-              color: audioOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
+              color: audioOn
+                  ? const Color(0xFF18A058)
+                  : const Color(0xFFE6504F),
             ),
             const SizedBox(width: 10),
             Icon(
               videoOn ? Icons.videocam : Icons.videocam_off,
               size: 19,
-              color: videoOn ? const Color(0xFF18A058) : const Color(0xFFE6504F),
+              color: videoOn
+                  ? const Color(0xFF18A058)
+                  : const Color(0xFFE6504F),
             ),
           ],
         ),
@@ -1133,7 +1203,7 @@ class _VideoRendererViewState extends State<_VideoRendererView> {
     if (widget.renderer.videoWidth > 0) {
       _isReady = true;
     }
-    
+
     // 监听分辨率变化
     widget.renderer.onResize = () {
       if (mounted && !_isReady && widget.renderer.videoWidth > 0) {

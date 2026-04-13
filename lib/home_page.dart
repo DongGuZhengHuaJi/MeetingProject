@@ -25,8 +25,10 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  final WebRTCManager _manager = WebRTCManager();
   final List<ReservedMeeting> _reservedMeetings = [];
   Timer? _meetingStatusTimer;
+  StreamSubscription<MeetingUiEvent>? _managerEventSub;
 
   List<ReservedMeeting> get _scheduledReservedMeetings {
     final result = _reservedMeetings
@@ -51,6 +53,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _managerEventSub = _manager.uiEvents.listen(_handleManagerEvent);
     _fetchReservedMeetings();
     _meetingStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) {
@@ -61,17 +64,36 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _managerEventSub?.cancel();
     _meetingStatusTimer?.cancel();
     super.dispose();
   }
 
+  void _handleManagerEvent(MeetingUiEvent event) {
+    if (!mounted) return;
+
+    switch (event.type) {
+      case MeetingUiEventType.roomClosed:
+      case MeetingUiEventType.reservationNotice:
+        _fetchReservedMeetings();
+        break;
+      case MeetingUiEventType.signalingError:
+        if (ModalRoute.of(context)?.isCurrent ?? false) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(event.message)));
+        }
+        break;
+      case MeetingUiEventType.joinSucceeded:
+      case MeetingUiEventType.joinFailed:
+        break;
+    }
+  }
 
   Future<void> _joinAndNavigate({
     required String roomId,
     required bool isHost,
   }) async {
-    final manager = WebRTCManager();
-
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -79,21 +101,25 @@ class _HomePageState extends State<HomePage> {
     );
 
     try {
-      if (!manager.meetingState.isSignalingConnected || manager.selfId != widget.selfId) {
-        await manager.initializeSignaling(
+      if (!_manager.meetingState.isSignalingConnected ||
+          _manager.selfId != widget.selfId) {
+        await _manager.initializeSignaling(
           selfId: widget.selfId,
           signalingUrl: kSignalingUrl,
         );
       }
 
-      if (manager.isInRoom) {
-        final currentRoom = manager.meetingState.currentRoomId;
+      if (_manager.isInRoom) {
+        final currentRoom = _manager.meetingState.currentRoomId;
         if (currentRoom != roomId) {
-          await manager.leaveRoom();
+          await _manager.leaveRoom();
         }
       }
 
-      final joinResult = await manager.joinRoom(roomId: roomId, isHost: isHost);
+      final joinResult = await _manager.joinRoom(
+        roomId: roomId,
+        isHost: isHost,
+      );
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -112,15 +138,17 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('加入失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('加入失败: $e')));
     }
   }
 
   Future<void> _fetchReservedMeetings() async {
     try {
-      final meetings = await widget.httpMgr.getUserReservedMeetings(userId: widget.selfId);
+      final meetings = await widget.httpMgr.getUserReservedMeetings(
+        userId: widget.selfId,
+      );
       setState(() {
         _reservedMeetings
           ..clear()
@@ -129,19 +157,23 @@ class _HomePageState extends State<HomePage> {
     } on ApiException catch (e) {
       logger.e('API Error fetching meetings: ${e.message}');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('获取会议列表失败：${e.message}')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('获取会议列表失败：${e.message}')));
     } catch (e) {
       logger.e('Error fetching meetings: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('获取会议列表失败：$e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('获取会议列表失败：$e')));
     }
   }
 
-  void _upsertReservedMeeting(String roomId, DateTime startTime, String status) {
+  void _upsertReservedMeeting(
+    String roomId,
+    DateTime startTime,
+    String status,
+  ) {
     final idx = _reservedMeetings.indexWhere((m) => m.roomId == roomId);
     if (idx >= 0) {
       _reservedMeetings[idx] = ReservedMeeting(
@@ -151,12 +183,14 @@ class _HomePageState extends State<HomePage> {
         status: status,
       );
     } else {
-      _reservedMeetings.add(ReservedMeeting(
-        roomId: roomId,
-        startTime: startTime,
-        meetingType: 'reserved',
-        status: status,
-      ));
+      _reservedMeetings.add(
+        ReservedMeeting(
+          roomId: roomId,
+          startTime: startTime,
+          meetingType: 'reserved',
+          status: status,
+        ),
+      );
     }
 
     _reservedMeetings.sort((a, b) => a.startTime.compareTo(b.startTime));
@@ -266,7 +300,9 @@ class _HomePageState extends State<HomePage> {
               '快速会议',
               const Color(0xFF0052D9),
               onTap: () async {
-                final randomRoom = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString();
+                final randomRoom =
+                    (100000 + (DateTime.now().millisecondsSinceEpoch % 899999))
+                        .toString();
                 try {
                   await widget.httpMgr.startQuickMeeting(
                     userId: widget.selfId,
@@ -274,9 +310,9 @@ class _HomePageState extends State<HomePage> {
                   );
                 } catch (e) {
                   if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('快速会议记录失败：$e')),
-                  );
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(SnackBar(content: Text('快速会议记录失败：$e')));
                   return;
                 }
                 await _joinAndNavigate(roomId: randomRoom, isHost: true);
@@ -330,10 +366,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           const SizedBox(height: 5),
-          const Text(
-            '已登录',
-            style: TextStyle(color: Colors.grey, fontSize: 13),
-          ),
+          const Text('已登录', style: TextStyle(color: Colors.grey, fontSize: 13)),
           const SizedBox(height: 24),
           const Text(
             '预约会议',
@@ -538,7 +571,10 @@ class _HomePageState extends State<HomePage> {
                                 ? null
                                 : () async {
                                     Navigator.pop(dialogContext);
-                                    await _joinAndNavigate(roomId: roomId, isHost: false);
+                                    await _joinAndNavigate(
+                                      roomId: roomId,
+                                      isHost: false,
+                                    );
                                   },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.blueAccent,
@@ -550,7 +586,10 @@ class _HomePageState extends State<HomePage> {
                               ),
                               elevation: 0,
                             ),
-                            child: const Text('确认加入', style: TextStyle(fontSize: 13)),
+                            child: const Text(
+                              '确认加入',
+                              style: TextStyle(fontSize: 13),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -565,7 +604,10 @@ class _HomePageState extends State<HomePage> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                             ),
-                            child: const Text('取消', style: TextStyle(fontSize: 13)),
+                            child: const Text(
+                              '取消',
+                              style: TextStyle(fontSize: 13),
+                            ),
                           ),
                         ),
                       ],
@@ -583,7 +625,8 @@ class _HomePageState extends State<HomePage> {
   void _showReserveDialog(BuildContext context) {
     DateTime selectedDate = DateTime.now();
     TimeOfDay selectedTime = TimeOfDay.now();
-    final roomId = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString();
+    final roomId = (100000 + (DateTime.now().millisecondsSinceEpoch % 899999))
+        .toString();
 
     showDialog(
       context: context,
@@ -639,7 +682,8 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 20),
                     _buildPickerItem(
                       label: '会议日期',
-                      value: '${selectedDate.year}-${selectedDate.month}-${selectedDate.day}',
+                      value:
+                          '${selectedDate.year}-${selectedDate.month}-${selectedDate.day}',
                       onTap: () async {
                         final date = await showDatePicker(
                           context: context,
@@ -694,21 +738,37 @@ class _HomePageState extends State<HomePage> {
                                       );
 
                                       if (!mounted) return;
-                                      _upsertReservedMeeting(roomId, finalDateTime, 'scheduled');
+                                      _upsertReservedMeeting(
+                                        roomId,
+                                        finalDateTime,
+                                        'scheduled',
+                                      );
                                       Navigator.pop(dialogContext);
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text('会议预约成功：$roomId')),
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text('会议预约成功：$roomId'),
+                                        ),
                                       );
                                     } on ApiException catch (e) {
-                                      logger.e('API Error reserving meeting: ${e.message}');
+                                      logger.e(
+                                        'API Error reserving meeting: ${e.message}',
+                                      );
                                       if (!mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(content: Text('预约失败：${e.message}')),
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text('预约失败：${e.message}'),
+                                        ),
                                       );
                                     } catch (e) {
                                       logger.e('Error reserving meeting: $e');
                                       if (!mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         SnackBar(content: Text('预约失败：$e')),
                                       );
                                     }
@@ -723,7 +783,10 @@ class _HomePageState extends State<HomePage> {
                               ),
                               elevation: 0,
                             ),
-                            child: const Text('确认预定', style: TextStyle(fontSize: 13)),
+                            child: const Text(
+                              '确认预定',
+                              style: TextStyle(fontSize: 13),
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -738,7 +801,10 @@ class _HomePageState extends State<HomePage> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                             ),
-                            child: const Text('取消预约', style: TextStyle(fontSize: 13)),
+                            child: const Text(
+                              '取消预约',
+                              style: TextStyle(fontSize: 13),
+                            ),
                           ),
                         ),
                       ],
@@ -822,12 +888,10 @@ class _HomePageState extends State<HomePage> {
         : DateFormat('yyyy-MM-dd HH:mm').format(meeting.endedAt!);
     final now = DateTime.now();
     final bool started = !meeting.isClosed && !meeting.startTime.isAfter(now);
-    final statusText = meeting.isClosed
-      ? '已关闭'
-      : (started ? '已开始' : '未开始');
+    final statusText = meeting.isClosed ? '已关闭' : (started ? '已开始' : '未开始');
     final statusColor = meeting.isClosed
-      ? const Color(0xFF8C8C8C)
-      : (started ? const Color(0xFF18A058) : const Color(0xFF1677FF));
+        ? const Color(0xFF8C8C8C)
+        : (started ? const Color(0xFF18A058) : const Color(0xFF1677FF));
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -857,7 +921,10 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
                       decoration: BoxDecoration(
                         color: statusColor.withOpacity(0.12),
                         borderRadius: BorderRadius.circular(10),
