@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as webrtc;
 import 'peer_models.dart';
 import 'websocket_mgr.dart';
@@ -63,7 +64,7 @@ class WebRTCManager extends ChangeNotifier {
   final webrtc.RTCVideoRenderer _localRenderer = webrtc.RTCVideoRenderer();
   webrtc.MediaStream? _localStream;
   webrtc.MediaStream? _screenStream; // 屏幕流
-  webrtc.MediaStream? _cameraStream;
+  webrtc.MediaStream? _preScreenShareStream; // 屏幕共享前的本地流（可能含音视频）
   bool _isCameraOn = false;
   bool _isMicrophoneOn = false;
   bool _isScreenSharing = false;
@@ -71,6 +72,8 @@ class WebRTCManager extends ChangeNotifier {
   List<webrtc.MediaDeviceInfo> _microphoneDevices = [];
   String? _selectedCameraId;
   String? _selectedMicrophoneId;
+  bool _isLeavingRoom = false;
+  bool _isCleaningLocalMedia = false;
 
   // ==================== 会议状态 ====================
   MeetingState _meetingState = const MeetingState();
@@ -243,33 +246,39 @@ class WebRTCManager extends ChangeNotifier {
 
   /// 离开当前房间
   Future<void> leaveRoom({bool endMeetingIfHost = false}) async {
-    if (!_meetingState.isInRoom) return;
+    if (!_meetingState.isInRoom || _isLeavingRoom) return;
 
-    final roomId = _meetingState.currentRoomId;
+    _isLeavingRoom = true;
 
-    // 1. 通知服务器
-    if (roomId != null) {
-      _sendSignalingMessage({
-        'type': 'leave',
-        'from': _selfId,
-        'room': roomId,
-        'end_meeting': endMeetingIfHost,
-      });
+    try {
+      final roomId = _meetingState.currentRoomId;
+
+      // 1. 通知服务器
+      if (roomId != null) {
+        _sendSignalingMessage({
+          'type': 'leave',
+          'from': _selfId,
+          'room': roomId,
+          'end_meeting': endMeetingIfHost,
+        });
+      }
+
+      // 2. 清理所有远端连接
+      await _cleanupAllRemotePeers();
+
+      // 3. 清理本地媒体
+      await _cleanupLocalMedia();
+      _cameraDevices.clear();
+      _microphoneDevices.clear();
+      _selectedCameraId = null;
+      _selectedMicrophoneId = null;
+
+      _updateMeetingState(isInRoom: false, currentRoomId: null);
+
+      logger.i('🚪 已离开房间');
+    } finally {
+      _isLeavingRoom = false;
     }
-
-    // 2. 清理所有远端连接
-    await _cleanupAllRemotePeers();
-
-    // 3. 清理本地媒体
-    await _cleanupLocalMedia();
-    _cameraDevices.clear();
-    _microphoneDevices.clear();
-    _selectedCameraId = null;
-    _selectedMicrophoneId = null;
-
-    _updateMeetingState(isInRoom: false, currentRoomId: null);
-
-    logger.i('🚪 已离开房间');
   }
 
   /// 切换麦克风状态
@@ -532,10 +541,6 @@ class WebRTCManager extends ChangeNotifier {
       // 停止屏幕共享
       await _stopScreenSharing();
     } else {
-      if (_isCameraOn) {
-        // 如果摄像头正在开启，先关闭它
-        await toggleCamera();
-      }
       // 开始屏幕共享
       await _startScreenSharing();
     }
@@ -574,7 +579,6 @@ class WebRTCManager extends ChangeNotifier {
       }
 
       await _localStream!.addTrack(newVideoTrack);
-      _cameraStream = newStream;
       _localRenderer.srcObject = _localStream;
 
       // 同步给所有人
@@ -778,17 +782,66 @@ class WebRTCManager extends ChangeNotifier {
   }
 
   Future<void> _cleanupLocalMedia() async {
-    if (_localStream != null) {
-      for (final track in _localStream!.getTracks()) {
-        track.stop();
-      }
-      await _localStream!.dispose();
-      _localStream = null;
-    }
+    if (_isCleaningLocalMedia) return;
 
-    _localRenderer.srcObject = null;
-    _isCameraOn = false;
-    _isMicrophoneOn = false;
+    _isCleaningLocalMedia = true;
+    try {
+      final local = _localStream;
+      final screen = _screenStream;
+      final preScreenShare = _preScreenShareStream;
+
+      _localStream = null;
+      _screenStream = null;
+      _preScreenShareStream = null;
+
+      if (local != null) {
+        for (final track in local.getTracks()) {
+          track.stop();
+        }
+        await _safeDisposeStream(local, 'local');
+      }
+
+      if (screen != null && !identical(screen, local)) {
+        for (final track in screen.getTracks()) {
+          track.stop();
+        }
+        await _safeDisposeStream(screen, 'screen');
+      }
+
+      if (preScreenShare != null &&
+          !identical(preScreenShare, local) &&
+          !identical(preScreenShare, screen)) {
+        for (final track in preScreenShare.getTracks()) {
+          track.stop();
+        }
+        await _safeDisposeStream(preScreenShare, 'pre-screen-share');
+      }
+
+      _localRenderer.srcObject = null;
+      _isCameraOn = false;
+      _isMicrophoneOn = false;
+      _isScreenSharing = false;
+    } finally {
+      _isCleaningLocalMedia = false;
+    }
+  }
+
+  Future<void> _safeDisposeStream(
+    webrtc.MediaStream stream,
+    String streamName,
+  ) async {
+    try {
+      await stream.dispose();
+    } on PlatformException catch (e) {
+      final message = e.message ?? '';
+      if (message.contains('not found')) {
+        logger.w('忽略重复释放流($streamName): $message');
+        return;
+      }
+      rethrow;
+    } catch (e) {
+      logger.w('释放流($streamName)失败: $e');
+    }
   }
 
   Future<void> _cleanupLocalCameraStream() async {
@@ -822,24 +875,84 @@ class WebRTCManager extends ChangeNotifier {
         throw Exception('移动端屏幕共享需要额外配置，请先使用桌面端测试');
       }
 
-      _screenStream = await webrtc.navigator.mediaDevices.getDisplayMedia({
-        'video': true,
-        'audio': true,
-      });
+      Map<String, dynamic> displayConstraints = {'video': true, 'audio': true};
 
-      _cameraStream = _localStream; // 备份当前摄像头流
-      _localStream = _screenStream; // 切换到屏幕流
-      _localRenderer.srcObject = _localStream;
+      if (webrtc.WebRTC.platformIsDesktop) {
+        final sources = await webrtc.desktopCapturer.getSources(
+          types: [webrtc.SourceType.Screen],
+        );
 
-      await _replaceTrackOnAllConnections(
-        _screenStream!.getVideoTracks().first,
+        if (sources.isEmpty) {
+          throw Exception('未找到可共享的屏幕或窗口，请确认系统有可用显示源');
+        }
+
+        final screenSources = sources
+            .where((s) => s.type == webrtc.SourceType.Screen)
+            .toList();
+        final selectedSource = screenSources.isNotEmpty
+            ? screenSources.first
+            : sources.first;
+
+        displayConstraints = {
+          'video': {
+            'deviceId': {'exact': selectedSource.id},
+            'mandatory': {'frameRate': 15.0},
+          },
+          // Linux/macOS/Windows 上系统音频捕获兼容性差异较大，先关闭保证视频共享稳定。
+          'audio': false,
+        };
+
+        logger.i('🖥️ 选择共享源: ${selectedSource.name}(${selectedSource.id})');
+      }
+
+      _screenStream = await webrtc.navigator.mediaDevices.getDisplayMedia(
+        displayConstraints,
       );
 
+      final screenVideoTracks = _screenStream!.getVideoTracks();
+      if (screenVideoTracks.isEmpty) {
+        throw Exception('屏幕共享未返回视频轨道');
+      }
+
+      final previousLocal = _localStream;
+      _preScreenShareStream = previousLocal; // 备份共享前本地流
+
+      // 构造“屏幕视频 + 原麦克风音频”的本地流，保证共享时持续发声。
+      webrtc.MediaStream? mixedStream;
+      try {
+        mixedStream = await webrtc.createLocalMediaStream(
+          'screen-share-${DateTime.now().millisecondsSinceEpoch}',
+        );
+        await mixedStream.addTrack(screenVideoTracks.first);
+
+        for (final audioTrack in previousLocal?.getAudioTracks() ?? const []) {
+          try {
+            await mixedStream.addTrack(audioTrack);
+          } catch (e) {
+            logger.w('混合流添加音频轨失败，继续共享视频: $e');
+          }
+        }
+
+        _localStream = mixedStream;
+      } catch (e) {
+        logger.w('构造屏幕共享混合流失败，降级为仅屏幕视频: $e');
+        if (mixedStream != null) {
+          await _safeDisposeStream(mixedStream, 'mixed-local-fallback');
+        }
+        _localStream = _screenStream;
+      }
+
+      _localRenderer.srcObject = _localStream;
+
+      await _replaceTrackOnAllConnections(screenVideoTracks.first);
+
       _isScreenSharing = true;
+      _isCameraOn = false;
+      _broadcastMediaState();
       notifyListeners();
       logger.i('🖥️ 屏幕共享已开始');
 
-      _screenStream!.getVideoTracks().first.onEnded = () {
+      screenVideoTracks.first.onEnded = () {
         toggleScreenSharing();
       };
     } catch (e) {
@@ -852,18 +965,54 @@ class WebRTCManager extends ChangeNotifier {
     if (!_isScreenSharing) return;
 
     try {
-      await _screenStream?.dispose();
+      final mixedLocalStream = _localStream;
+      final streamToDispose = _screenStream;
       _screenStream = null;
 
-      if (_cameraStream != null) {
-        _localStream = _cameraStream; // 切回摄像头流
-        _localRenderer.srcObject = _localStream;
-        await _replaceTrackOnAllConnections(
-          _cameraStream!.getVideoTracks().first,
-        );
+      if (streamToDispose != null) {
+        for (final track in streamToDispose.getTracks()) {
+          track.stop();
+        }
+        await _safeDisposeStream(streamToDispose, 'screen');
       }
 
+      _localStream = _preScreenShareStream; // 切回共享前音视频流
+
+      final restoreVideoTrack = _preScreenShareStream
+          ?.getVideoTracks()
+          .firstOrNull;
+      _isCameraOn = restoreVideoTrack != null;
+
+      if (restoreVideoTrack != null) {
+        _localRenderer.srcObject = _localStream;
+        await _replaceTrackOnAllConnections(restoreVideoTrack);
+      } else {
+        _localRenderer.srcObject = null;
+        for (final peer in _remotePeers.values) {
+          if (peer.connection == null) continue;
+
+          final senders = await peer.connection!.getSenders();
+          final videoSender = senders.cast<webrtc.RTCRtpSender?>().firstWhere(
+            (s) => s?.track?.kind == 'video',
+            orElse: () => null,
+          );
+
+          if (videoSender != null) {
+            await peer.connection!.removeTrack(videoSender);
+          }
+        }
+      }
+
+      if (mixedLocalStream != null &&
+          !identical(mixedLocalStream, streamToDispose) &&
+          !identical(mixedLocalStream, _preScreenShareStream)) {
+        await _safeDisposeStream(mixedLocalStream, 'mixed-local');
+      }
+
+      _preScreenShareStream = null;
+
       _isScreenSharing = false;
+      _broadcastMediaState();
       notifyListeners();
       logger.i('🖥️ 屏幕共享已停止');
     } catch (e) {
@@ -966,6 +1115,21 @@ class WebRTCManager extends ChangeNotifier {
     if (_localStream != null) {
       for (final track in _localStream!.getTracks()) {
         await pc.addTrack(track, _localStream!);
+      }
+
+      // 屏幕共享期间，如果当前本地流里没有音频轨，尝试从共享前流补挂麦克风轨。
+      if (_isScreenSharing && _preScreenShareStream != null) {
+        final senders = await pc.getSenders();
+        final hasAudioSender = senders.any((s) => s.track?.kind == 'audio');
+        if (!hasAudioSender) {
+          for (final audioTrack in _preScreenShareStream!.getAudioTracks()) {
+            try {
+              await pc.addTrack(audioTrack, _preScreenShareStream!);
+            } catch (e) {
+              logger.w('屏幕共享期间补挂音频轨失败: $e');
+            }
+          }
+        }
       }
     }
   }
@@ -1215,7 +1379,7 @@ class WebRTCManager extends ChangeNotifier {
       'type': 'media_state',
       'from': _selfId,
       'to': peerId,
-      'videoOn': _isCameraOn,
+      'videoOn': _isCameraOn || _isScreenSharing,
       'audioOn': _isMicrophoneOn,
     });
 
@@ -1237,6 +1401,11 @@ class WebRTCManager extends ChangeNotifier {
   }
 
   Future<void> _handleRoomClosed(Map<String, dynamic> data) async {
+    if (_isLeavingRoom) {
+      logger.i('本端正在离会，忽略 room_closed 的重复清理');
+      return;
+    }
+
     final roomId = data['room_id']?.toString() ?? _meetingState.currentRoomId;
     final reason = data['reason']?.toString() ?? 'unknown';
     final meetingType = data['meeting_type']?.toString() ?? 'unknown';
@@ -1303,7 +1472,7 @@ class WebRTCManager extends ChangeNotifier {
         'type': 'media_state',
         'from': _selfId,
         'to': peerId,
-        'videoOn': _isCameraOn,
+        'videoOn': _isCameraOn || _isScreenSharing,
         'audioOn': _isMicrophoneOn,
       });
 
@@ -1393,20 +1562,11 @@ class WebRTCManager extends ChangeNotifier {
   }
 
   void _broadcastMediaState() {
-    // for(final peerId in _remotePeers.keys){
-    //   _sendSignalingMessage({
-    //   'type': 'media_state',
-    //   'from': _selfId,
-    //   'to': peerId,
-    //   'videoOn': _isCameraOn,
-    //   'audioOn': _isMicrophoneOn,
-    //   });
-    // }
     _sendSignalingMessage({
       'type': 'media_state',
       'from': _selfId,
       'room': _meetingState.currentRoomId,
-      'videoOn': _isCameraOn,
+      'videoOn': _isCameraOn || _isScreenSharing,
       'audioOn': _isMicrophoneOn,
     });
   }

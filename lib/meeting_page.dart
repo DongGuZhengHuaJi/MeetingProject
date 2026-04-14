@@ -29,6 +29,7 @@ class MeetingPage extends StatefulWidget {
 class _MeetingPageState extends State<MeetingPage> {
   late final MeetingController _controller;
   bool _joinWithMic = false;
+  bool _isLeaving = false;
   StreamSubscription<MeetingPageUiEvent>? _controllerEventSub;
 
   static const Color _pageBg = Color(0xFFF6F8FC);
@@ -244,7 +245,10 @@ class _MeetingPageState extends State<MeetingPage> {
   void dispose() {
     _controllerEventSub?.cancel();
     _controller.removeListener(_onControllerUpdate);
-    unawaited(_controller.leaveMeeting(endMeetingIfHost: false));
+    if (_controller.manager.isInRoom && !_isLeaving) {
+      _isLeaving = true;
+      unawaited(_controller.leaveMeeting(endMeetingIfHost: false));
+    }
     _controller.dispose();
     super.dispose();
   }
@@ -288,7 +292,9 @@ class _MeetingPageState extends State<MeetingPage> {
         id: widget.selfId,
         name: '我',
         renderer: _controller.manager.localRenderer,
-        isVideoOn: _controller.manager.isCameraOn,
+        isVideoOn:
+            _controller.manager.isCameraOn ||
+            _controller.manager.isScreenSharing,
         isAudioOn: _controller.manager.isMicrophoneOn,
         isLocal: true,
       ),
@@ -494,7 +500,10 @@ class _MeetingPageState extends State<MeetingPage> {
         children: [
           // 只有当视频开启且渲染器存在时才尝试渲染
           if (p.isVideoOn && p.renderer != null)
-            _VideoRendererView(renderer: p.renderer!, isLocal: p.isLocal)
+            _VideoRendererView(
+              renderer: p.renderer!,
+              mirror: p.isLocal && !_controller.manager.isScreenSharing,
+            )
           else
             Center(child: _buildCircularAvatar(p.name, 60)),
           // 信息浮层
@@ -786,8 +795,11 @@ class _MeetingPageState extends State<MeetingPage> {
                   Expanded(
                     child: ElevatedButton(
                       onPressed: () async {
+                        if (_isLeaving) return;
+                        _isLeaving = true;
                         Navigator.pop(dialogContext);
                         await _controller.leaveMeeting(endMeetingIfHost: false);
+                        if (!mounted) return;
                         Navigator.pop(context);
                       },
                       style: ElevatedButton.styleFrom(
@@ -812,6 +824,8 @@ class _MeetingPageState extends State<MeetingPage> {
                   width: double.infinity,
                   child: ElevatedButton(
                     onPressed: () async {
+                      if (_isLeaving) return;
+                      _isLeaving = true;
                       Navigator.pop(dialogContext);
                       await _controller.leaveMeeting(endMeetingIfHost: true);
                       if (!mounted) return;
@@ -1052,7 +1066,9 @@ class _MeetingPageState extends State<MeetingPage> {
                     _buildParticipantListTile(
                       name: '${widget.selfId} (我)',
                       audioOn: _controller.manager.isMicrophoneOn,
-                      videoOn: _controller.manager.isCameraOn,
+                      videoOn:
+                          _controller.manager.isCameraOn ||
+                          _controller.manager.isScreenSharing,
                       isSelf: true,
                     ),
                     ..._controller.manager.remotePeers.values.map(
@@ -1160,9 +1176,9 @@ class _ParticipantViewModel {
 
 class _VideoRendererView extends StatefulWidget {
   final webrtc.RTCVideoRenderer renderer;
-  final bool isLocal;
+  final bool mirror;
 
-  const _VideoRendererView({required this.renderer, required this.isLocal});
+  const _VideoRendererView({required this.renderer, required this.mirror});
 
   @override
   State<_VideoRendererView> createState() => _VideoRendererViewState();
@@ -1198,7 +1214,7 @@ class _VideoRendererViewState extends State<_VideoRendererView> {
       curve: Curves.easeIn,
       child: webrtc.RTCVideoView(
         widget.renderer,
-        mirror: widget.isLocal,
+        mirror: widget.mirror,
         objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
       ),
     );
