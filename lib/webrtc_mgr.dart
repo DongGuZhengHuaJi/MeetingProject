@@ -336,6 +336,7 @@ class WebRTCManager extends ChangeNotifier {
           );
           if (audioSender != null) {
             await peer.connection!.removeTrack(audioSender);
+            await _renegotiatePeer(peer.id, peer.connection!);
           }
         }
       }
@@ -378,7 +379,7 @@ class WebRTCManager extends ChangeNotifier {
               ? {
                   'deviceId': {'exact': _selectedCameraId},
                 }
-              : _defaultVideoConstraints['video'],
+              : _defaultVideoConstraints,
         });
 
         final newTrack = newStream.getVideoTracks().first;
@@ -419,6 +420,7 @@ class WebRTCManager extends ChangeNotifier {
           );
           if (videoSender != null) {
             await peer.connection!.removeTrack(videoSender);
+            await _renegotiatePeer(peer.id, peer.connection!);
           }
         }
       }
@@ -1017,6 +1019,7 @@ class WebRTCManager extends ChangeNotifier {
 
           if (videoSender != null) {
             await peer.connection!.removeTrack(videoSender);
+            await _renegotiatePeer(peer.id, peer.connection!);
           }
         }
       }
@@ -1271,6 +1274,7 @@ class WebRTCManager extends ChangeNotifier {
             await videoSender.replaceTrack(newTrack);
           } else if (_localStream != null) {
             await peer.connection!.addTrack(newTrack, _localStream!);
+            await _renegotiatePeer(peer.id, peer.connection!);
           }
         } catch (e) {
           logger.w('替换轨道失败 [${peer.id}]: $e');
@@ -1287,6 +1291,7 @@ class WebRTCManager extends ChangeNotifier {
             await audioSender.replaceTrack(newTrack);
           } else if (_localStream != null) {
             await peer.connection!.addTrack(newTrack, _localStream!);
+            await _renegotiatePeer(peer.id, peer.connection!);
           }
         } catch (e) {
           logger.w('替换轨道失败 [${peer.id}]: $e');
@@ -1294,6 +1299,25 @@ class WebRTCManager extends ChangeNotifier {
       } else {
         logger.w('未知轨道类型，无法替换: $trackKind');
       }
+    }
+  }
+
+  Future<void> _renegotiatePeer(
+    String peerId,
+    webrtc.RTCPeerConnection connection,
+  ) async {
+    try {
+      final offer = await connection.createOffer();
+      await connection.setLocalDescription(offer);
+      _sendSignalingMessage({
+        'type': 'offer',
+        'from': _selfId,
+        'to': peerId,
+        'sdp': offer.sdp,
+      });
+      logger.i('🔁 主动重协商已触发: $peerId');
+    } catch (e) {
+      logger.w('主动重协商失败 [$peerId]: $e');
     }
   }
 
