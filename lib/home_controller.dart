@@ -13,12 +13,14 @@ class HomeUiEvent {
   final String message;
   final String? roomId;
   final bool? isHost;
+  final bool openScreenShare;
 
   const HomeUiEvent({
     required this.type,
     required this.message,
     this.roomId,
     this.isHost,
+    this.openScreenShare = false,
   });
 }
 
@@ -39,9 +41,11 @@ class HomeController extends ChangeNotifier {
 
   StreamSubscription<MeetingUiEvent>? _managerEventSub;
   bool _isQuickMeetingStarting = false;
+  bool _isScreenShareStarting = false;
 
   Stream<HomeUiEvent> get uiEvents => _uiEventController.stream;
   bool get isQuickMeetingStarting => _isQuickMeetingStarting;
+  bool get isScreenShareStarting => _isScreenShareStarting;
 
   List<Meeting> get scheduledMeetings {
     final result = _meetings
@@ -125,7 +129,7 @@ class HomeController extends ChangeNotifier {
     }
   }
 
-  Future<void> quickMeeting() async {
+  Future<void> startQuickMeeting() async {
     if (_isQuickMeetingStarting) {
       return;
     }
@@ -157,9 +161,42 @@ class HomeController extends ChangeNotifier {
     );
   }
 
+  Future<void> startScreenShare() async {
+    if(_isScreenShareStarting) {
+      return;
+    }
+
+    _isScreenShareStarting = true;
+    notifyListeners();
+    final randomRoom =
+        (100000 + (DateTime.now().millisecondsSinceEpoch % 899999)).toString();
+    try {
+      await httpMgr.startScreenShare(userId: selfId, roomId: randomRoom);
+    } catch (e) {
+      _emitUiEvent(
+        HomeUiEvent(type: HomeUiEventType.showMessage, message: '开始屏幕共享失败：$e'),
+      );
+      return;
+    } finally {      
+      _isScreenShareStarting = false;
+      notifyListeners();
+    }
+
+    _emitUiEvent( 
+      HomeUiEvent(
+        type: HomeUiEventType.joinAndNavigate,
+        message: '开始屏幕共享',
+        roomId: randomRoom,
+        isHost: true,
+        openScreenShare: true,
+      ),
+    );
+  }
+
   Future<JoinRoomResult> joinMeeting({
     required String roomId,
     required bool isHost,
+    String? meetingType,
   }) async {
     if (!manager.meetingState.isSignalingConnected ||
         manager.selfId != selfId) {
@@ -176,7 +213,7 @@ class HomeController extends ChangeNotifier {
       }
     }
 
-    return manager.joinRoom(roomId: roomId, isHost: isHost);
+    return manager.joinRoom(roomId: roomId, isHost: isHost, meetingType: meetingType);
   }
 
   void _upsertMeeting({

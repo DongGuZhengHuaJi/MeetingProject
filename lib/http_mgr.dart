@@ -154,8 +154,8 @@ class HttpMgr {
       );
     }
 
-    final List<dynamic> reservations = rsp['reservations'] ?? [];
-    return reservations
+    final List<dynamic> meetings = rsp['meetings'] ?? [];
+    return meetings
         .map(
           (r) => Meeting(
             roomId: r['room'] as String,
@@ -184,21 +184,17 @@ class HttpMgr {
     );
   }
 
-  // Future<void> endMeeting({
-  //   required String userId,
-  //   required String roomId,
-  //   String? reason,
-  // }) async {
-  //   await postWithAccessToken(
-  //     action: 'end_meeting',
-  //     userId: userId,
-  //     payload: {
-  //       'from': userId,
-  //       'room': roomId,
-  //       if (reason != null) 'reason': reason,
-  //     },
-  //   );
-  // }
+  Future<void> startScreenShare({
+    required String userId,
+    required String roomId,
+  }) async {
+    await postWithAccessToken(
+      action: 'start_screen_share',
+      userId: userId,
+      payload: {'from': userId, 'room': roomId},
+    );
+  }
+
 
   static DateTime _parseServerDateTime(dynamic value) {
     final raw = (value ?? '').toString().trim();

@@ -12,6 +12,7 @@ class MeetingPage extends StatefulWidget {
   final bool isHost;
   final String signalingUrl;
   final bool alreadyJoined;
+  final bool openScreenShare;
 
   const MeetingPage({
     super.key,
@@ -20,6 +21,7 @@ class MeetingPage extends StatefulWidget {
     this.isHost = false,
     required this.signalingUrl,
     this.alreadyJoined = false,
+    this.openScreenShare = false,
   });
 
   @override
@@ -54,6 +56,9 @@ class _MeetingPageState extends State<MeetingPage> {
       if (!mounted) return;
       _initializeMeeting();
     });
+    if(widget.openScreenShare) {
+      _controller.manager.toggleScreenSharing();
+    }
   }
 
   void _handleControllerEvent(MeetingPageUiEvent event) {

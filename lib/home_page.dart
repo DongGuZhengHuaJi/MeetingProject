@@ -83,8 +83,15 @@ class _HomePageState extends State<HomePage> {
       case HomeUiEventType.joinAndNavigate:
         final roomId = event.roomId;
         final isHost = event.isHost ?? true;
+        final openScreenShare = event.openScreenShare;
         if (roomId != null && roomId.isNotEmpty) {
-          unawaited(_joinAndNavigate(roomId: roomId, isHost: isHost));
+          unawaited(
+            _joinAndNavigate(
+              roomId: roomId,
+              isHost: isHost,
+              openScreenShare: openScreenShare,
+            ),
+          );
         }
     }
   }
@@ -92,6 +99,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _joinAndNavigate({
     required String roomId,
     required bool isHost,
+    bool openScreenShare = false,
   }) async {
     showDialog(
       context: context,
@@ -103,11 +111,14 @@ class _HomePageState extends State<HomePage> {
       final joinResult = await _controller.joinMeeting(
         roomId: roomId,
         isHost: isHost,
+        meetingType: openScreenShare
+            ? 'screen_share'
+            : (isHost ? 'quick' : null),
       );
 
       if (!mounted) return;
       Navigator.pop(context);
-      Navigator.push(
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => MeetingPage(
@@ -116,9 +127,13 @@ class _HomePageState extends State<HomePage> {
             isHost: joinResult.isHost,
             signalingUrl: kSignalingUrl,
             alreadyJoined: true,
+            openScreenShare: openScreenShare,
           ),
         ),
       );
+
+      if (!mounted) return;
+      await _controller.fetchMeetings();
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
@@ -233,7 +248,7 @@ class _HomePageState extends State<HomePage> {
               onTap: _controller.isQuickMeetingStarting
                   ? null
                   : () async {
-                      await _controller.quickMeeting();
+                      await _controller.startQuickMeeting();
                     },
             ),
             _mainCard(
@@ -259,7 +274,11 @@ class _HomePageState extends State<HomePage> {
               Icons.screen_share,
               '共享屏幕',
               const Color(0xFF0052D9),
-              onTap: () {},
+              onTap: _controller.isScreenShareStarting
+                  ? null
+                  : () async {
+                      await _controller.startScreenShare();
+                    },
             ),
           ],
         ),

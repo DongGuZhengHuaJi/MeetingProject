@@ -172,6 +172,7 @@ class WebRTCManager extends ChangeNotifier {
   Future<JoinRoomResult> joinRoom({
     required String roomId,
     bool isHost = false,
+    String? meetingType,
   }) async {
     _ensureSignalingReady();
 
@@ -190,6 +191,7 @@ class WebRTCManager extends ChangeNotifier {
         'type': isHost ? 'create' : 'join',
         'room': roomId,
         'from': _selfId,
+        if (isHost) 'meeting_type': meetingType ?? 'quick',
       });
 
       final joinResult = await _waitForJoinAck(roomId: roomId);
@@ -869,6 +871,8 @@ class WebRTCManager extends ChangeNotifier {
   Future<void> _startScreenSharing() async {
     if (_isScreenSharing) return;
 
+    final localBeforeShare = _localStream;
+
     try {
       if (webrtc.WebRTC.platformIsAndroid || webrtc.WebRTC.platformIsIOS) {
         // 移动端：提示用户暂不支持，或引导使用"文件选择"分享图片
@@ -947,6 +951,7 @@ class WebRTCManager extends ChangeNotifier {
       await _replaceTrackOnAllConnections(screenVideoTracks.first);
 
       _isScreenSharing = true;
+      _isMicrophoneOn = _localStream?.getAudioTracks().isNotEmpty ?? false;
       _isCameraOn = false;
       _broadcastMediaState();
       notifyListeners();
@@ -956,6 +961,17 @@ class WebRTCManager extends ChangeNotifier {
         toggleScreenSharing();
       };
     } catch (e) {
+      // 启动失败时回滚到共享前状态，确保 UI 与实际媒体一致。
+      if (!_isScreenSharing) {
+        _localStream = _preScreenShareStream ?? localBeforeShare;
+        _localRenderer.srcObject = _localStream;
+        _isCameraOn = _localStream?.getVideoTracks().isNotEmpty ?? false;
+        _isMicrophoneOn = _localStream?.getAudioTracks().isNotEmpty ?? false;
+        _isScreenSharing = false;
+        _broadcastMediaState();
+        notifyListeners();
+      }
+
       logger.e('屏幕共享失败: $e');
       rethrow;
     }
@@ -982,6 +998,8 @@ class WebRTCManager extends ChangeNotifier {
           ?.getVideoTracks()
           .firstOrNull;
       _isCameraOn = restoreVideoTrack != null;
+      _isMicrophoneOn =
+          _preScreenShareStream?.getAudioTracks().isNotEmpty ?? false;
 
       if (restoreVideoTrack != null) {
         _localRenderer.srcObject = _localStream;
@@ -1118,7 +1136,9 @@ class WebRTCManager extends ChangeNotifier {
       }
 
       // 屏幕共享期间，如果当前本地流里没有音频轨，尝试从共享前流补挂麦克风轨。
-      if (_isScreenSharing && _preScreenShareStream != null) {
+      if (_isScreenSharing &&
+          _isMicrophoneOn &&
+          _preScreenShareStream != null) {
         final senders = await pc.getSenders();
         final hasAudioSender = senders.any((s) => s.track?.kind == 'audio');
         if (!hasAudioSender) {
