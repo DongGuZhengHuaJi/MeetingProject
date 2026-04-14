@@ -74,6 +74,8 @@ class WebRTCManager extends ChangeNotifier {
   String? _selectedMicrophoneId;
   bool _isLeavingRoom = false;
   bool _isCleaningLocalMedia = false;
+  final Map<String, Future<void>> _peerOpChains = {};
+  final Map<String, bool> _makingOffer = {};
 
   // ==================== 会议状态 ====================
   MeetingState _meetingState = const MeetingState();
@@ -336,7 +338,7 @@ class WebRTCManager extends ChangeNotifier {
           );
           if (audioSender != null) {
             await peer.connection!.removeTrack(audioSender);
-            await _renegotiatePeer(peer.id, peer.connection!);
+            await _renegotiatePeer(peer.id);
           }
         }
       }
@@ -420,7 +422,7 @@ class WebRTCManager extends ChangeNotifier {
           );
           if (videoSender != null) {
             await peer.connection!.removeTrack(videoSender);
-            await _renegotiatePeer(peer.id, peer.connection!);
+            await _renegotiatePeer(peer.id);
           }
         }
       }
@@ -1019,7 +1021,7 @@ class WebRTCManager extends ChangeNotifier {
 
           if (videoSender != null) {
             await peer.connection!.removeTrack(videoSender);
-            await _renegotiatePeer(peer.id, peer.connection!);
+            await _renegotiatePeer(peer.id);
           }
         }
       }
@@ -1071,18 +1073,7 @@ class WebRTCManager extends ChangeNotifier {
     // 重新协商处理
     pc.onRenegotiationNeeded = () async {
       logger.i('🔄 需要重新协商: ${peer.id}');
-      try {
-        final offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        _sendSignalingMessage({
-          'type': 'offer',
-          'from': _selfId,
-          'to': peer.id,
-          'sdp': offer.sdp,
-        });
-      } catch (e) {
-        logger.e('重新协商 Offer 失败: $e');
-      }
+      await _scheduleNegotiation(peer.id, reason: 'onRenegotiationNeeded');
     };
 
     // ICE 候选处理
@@ -1161,6 +1152,8 @@ class WebRTCManager extends ChangeNotifier {
     final peer = _remotePeers.remove(peerId);
     if (peer != null) {
       peer.dispose();
+      _makingOffer.remove(peerId);
+      _peerOpChains.remove(peerId);
       logger.i('👋 移除远端用户: $peerId');
       notifyListeners();
     }
@@ -1171,6 +1164,8 @@ class WebRTCManager extends ChangeNotifier {
       peer.dispose();
     }
     _remotePeers.clear();
+    _makingOffer.clear();
+    _peerOpChains.clear();
   }
 
   Future<JoinRoomResult> _waitForJoinAck({
@@ -1274,7 +1269,7 @@ class WebRTCManager extends ChangeNotifier {
             await videoSender.replaceTrack(newTrack);
           } else if (_localStream != null) {
             await peer.connection!.addTrack(newTrack, _localStream!);
-            await _renegotiatePeer(peer.id, peer.connection!);
+            await _renegotiatePeer(peer.id);
           }
         } catch (e) {
           logger.w('替换轨道失败 [${peer.id}]: $e');
@@ -1291,7 +1286,7 @@ class WebRTCManager extends ChangeNotifier {
             await audioSender.replaceTrack(newTrack);
           } else if (_localStream != null) {
             await peer.connection!.addTrack(newTrack, _localStream!);
-            await _renegotiatePeer(peer.id, peer.connection!);
+            await _renegotiatePeer(peer.id);
           }
         } catch (e) {
           logger.w('替换轨道失败 [${peer.id}]: $e');
@@ -1302,23 +1297,72 @@ class WebRTCManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _renegotiatePeer(
+  Future<void> _renegotiatePeer(String peerId) async {
+    await _scheduleNegotiation(peerId, reason: 'manual_renegotiate');
+  }
+
+  Future<void> _scheduleNegotiation(
+    String peerId, {
+    required String reason,
+  }) async {
+    await _runPeerOperation(peerId, () async {
+      final peer = _remotePeers[peerId];
+      final pc = peer?.connection;
+      if (pc == null) return;
+
+      final stable = await _isSignalingStable(pc);
+      if (!stable) {
+        logger.d('跳过协商 [$peerId], signaling state 非 stable, reason=$reason');
+        return;
+      }
+
+      if (_makingOffer[peerId] == true) {
+        logger.d('跳过协商 [$peerId], 当前已在创建 Offer, reason=$reason');
+        return;
+      }
+
+      _makingOffer[peerId] = true;
+      try {
+        final offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        _sendSignalingMessage({
+          'type': 'offer',
+          'from': _selfId,
+          'to': peerId,
+          'sdp': offer.sdp,
+        });
+        logger.i('📤 发送 Offer 给: $peerId (reason=$reason)');
+      } catch (e) {
+        logger.w('协商 Offer 失败 [$peerId]: $e (reason=$reason)');
+      } finally {
+        _makingOffer[peerId] = false;
+      }
+    });
+  }
+
+  Future<void> _runPeerOperation(
     String peerId,
-    webrtc.RTCPeerConnection connection,
-  ) async {
-    try {
-      final offer = await connection.createOffer();
-      await connection.setLocalDescription(offer);
-      _sendSignalingMessage({
-        'type': 'offer',
-        'from': _selfId,
-        'to': peerId,
-        'sdp': offer.sdp,
-      });
-      logger.i('🔁 主动重协商已触发: $peerId');
-    } catch (e) {
-      logger.w('主动重协商失败 [$peerId]: $e');
-    }
+    Future<void> Function() operation,
+  ) {
+    final previous = _peerOpChains[peerId] ?? Future<void>.value();
+    final next = previous.catchError((_) {}).then((_) => operation());
+
+    _peerOpChains[peerId] = next.whenComplete(() {
+      if (identical(_peerOpChains[peerId], next)) {
+        _peerOpChains.remove(peerId);
+      }
+    });
+
+    return _peerOpChains[peerId]!;
+  }
+
+  Future<bool> _isSignalingStable(webrtc.RTCPeerConnection pc) async {
+    final signalingState = await pc.getSignalingState();
+    return signalingState.toString().toLowerCase().contains('stable');
+  }
+
+  bool _isPolitePeer(String peerId) {
+    return _selfId.compareTo(peerId) > 0;
   }
 
   // ==================== 私有方法：信令处理 ====================
@@ -1493,74 +1537,88 @@ class WebRTCManager extends ChangeNotifier {
     try {
       final peer = await _getOrCreateRemotePeer(peerId);
       await _createPeerConnection(peer);
-
-      final offer = await peer.connection!.createOffer();
-      await peer.connection!.setLocalDescription(offer);
-
-      _sendSignalingMessage({
-        'type': 'offer',
-        'from': _selfId,
-        'to': peerId,
-        'sdp': offer.sdp,
-      });
-
-      logger.i('📤 发送 Offer 给: $peerId');
+      await _scheduleNegotiation(peerId, reason: 'initiate_call');
     } catch (e) {
       logger.e('发起呼叫失败: $e');
     }
   }
 
   Future<void> _handleOffer(String peerId, String sdp) async {
-    try {
-      _sendSignalingMessage({
-        'type': 'media_state',
-        'from': _selfId,
-        'to': peerId,
-        'videoOn': _isCameraOn || _isScreenSharing,
-        'audioOn': _isMicrophoneOn,
-      });
+    await _runPeerOperation(peerId, () async {
+      try {
+        _sendSignalingMessage({
+          'type': 'media_state',
+          'from': _selfId,
+          'to': peerId,
+          'videoOn': _isCameraOn || _isScreenSharing,
+          'audioOn': _isMicrophoneOn,
+        });
 
-      final peer = await _getOrCreateRemotePeer(peerId);
-      await _createPeerConnection(peer);
+        final peer = await _getOrCreateRemotePeer(peerId);
+        await _createPeerConnection(peer);
 
-      await peer.connection!.setRemoteDescription(
-        webrtc.RTCSessionDescription(sdp, 'offer'),
-      );
+        final pc = peer.connection!;
+        final isStable = await _isSignalingStable(pc);
+        final offerCollision = (_makingOffer[peerId] == true) || !isStable;
+        final polite = _isPolitePeer(peerId);
 
-      // 处理缓冲的 ICE 候选
-      await _processBufferedCandidates(peer);
+        if (offerCollision && !polite) {
+          logger.w('忽略冲突 Offer [$peerId], 本端为 impolite');
+          return;
+        }
 
-      final answer = await peer.connection!.createAnswer();
-      await peer.connection!.setLocalDescription(answer);
+        if (offerCollision && polite) {
+          try {
+            await pc.setLocalDescription(
+              webrtc.RTCSessionDescription('', 'rollback'),
+            );
+            logger.i('检测到 Offer 冲突 [$peerId], 已 rollback 本地描述');
+          } catch (e) {
+            logger.w('Offer 冲突 rollback 失败 [$peerId]: $e');
+          }
+        }
 
-      _sendSignalingMessage({
-        'type': 'answer',
-        'from': _selfId,
-        'to': peerId,
-        'sdp': answer.sdp,
-      });
+        await pc.setRemoteDescription(
+          webrtc.RTCSessionDescription(sdp, 'offer'),
+        );
 
-      logger.i('📤 发送 Answer 给: $peerId');
-    } catch (e) {
-      logger.e('处理 Offer 失败: $e');
-    }
+        // 处理缓冲的 ICE 候选
+        await _processBufferedCandidates(peer);
+
+        final answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        _sendSignalingMessage({
+          'type': 'answer',
+          'from': _selfId,
+          'to': peerId,
+          'sdp': answer.sdp,
+        });
+
+        logger.i('📤 发送 Answer 给: $peerId');
+      } catch (e) {
+        logger.e('处理 Offer 失败: $e');
+      }
+    });
   }
 
   Future<void> _handleAnswer(String peerId, String sdp) async {
-    try {
-      final peer = _remotePeers[peerId];
-      if (peer?.connection == null) return;
+    await _runPeerOperation(peerId, () async {
+      try {
+        final peer = _remotePeers[peerId];
+        if (peer?.connection == null) return;
 
-      await peer!.connection!.setRemoteDescription(
-        webrtc.RTCSessionDescription(sdp, 'answer'),
-      );
+        await peer!.connection!.setRemoteDescription(
+          webrtc.RTCSessionDescription(sdp, 'answer'),
+        );
 
-      await _processBufferedCandidates(peer);
+        await _processBufferedCandidates(peer);
 
-      logger.i('✅ Answer 处理完成: $peerId');
-    } catch (e) {
-      logger.e('处理 Answer 失败: $e');
-    }
+        logger.i('✅ Answer 处理完成: $peerId');
+      } catch (e) {
+        logger.e('处理 Answer 失败: $e');
+      }
+    });
   }
 
   Future<void> _handleCandidate(
