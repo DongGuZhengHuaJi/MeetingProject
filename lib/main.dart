@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart'; // 新增
 import 'login_page.dart';
-import 'home_page.dart'; // 确保导入
-import 'http_mgr.dart'; // 导入HttpMgr
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -37,16 +35,17 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
+      home: const LoginPage(),
       // 注册路由，方便跳转
-      routes: {
-        '/': (context) => const LoginPage(),
-        '/home': (context) {
-          final args = ModalRoute.of(context)?.settings.arguments;
-          final selfId =
-              args is Map ? (args['selfId']?.toString() ?? '') : '';
-          return HomePage(selfId: selfId, httpMgr: HttpMgr.instance());
-        },
-      },
+      // routes: {
+      //   '/': (context) => const LoginPage(),
+      //   '/home': (context) {
+      //     final args = ModalRoute.of(context)?.settings.arguments;
+      //     final selfId =
+      //         args is Map ? (args['selfId']?.toString() ?? '') : '';
+      //     return HomePage(selfId: selfId, httpMgr: HttpMgr.instance());
+      //   },
+      // },
     );
   }
 }

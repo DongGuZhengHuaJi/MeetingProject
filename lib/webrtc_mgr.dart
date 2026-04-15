@@ -62,6 +62,7 @@ class WebRTCManager extends ChangeNotifier {
 
   // ==================== 本地状态 ====================
   String _selfId = '';
+  String _selfName = '';
   final webrtc.RTCVideoRenderer _localRenderer = webrtc.RTCVideoRenderer();
   webrtc.MediaStream? _localStream;
   webrtc.MediaStream? _screenStream; // 屏幕流
@@ -102,6 +103,7 @@ class WebRTCManager extends ChangeNotifier {
 
   // ==================== 公共 Getter ====================
   String get selfId => _selfId;
+  String get selfName => _selfName;
   webrtc.RTCVideoRenderer get localRenderer => _localRenderer;
   bool get isCameraOn => _isCameraOn;
   bool get isMicrophoneOn => _isMicrophoneOn;
@@ -131,14 +133,20 @@ class WebRTCManager extends ChangeNotifier {
   /// [signalingUrl] WebSocket 服务器地址
   Future<void> initializeSignaling({
     required String selfId,
+    String? selfName,
     required String signalingUrl,
   }) async {
+    _selfId = selfId;
+    if (selfName != null && selfName.trim().isNotEmpty) {
+      _selfName = selfName.trim();
+    } else if (_selfName.isEmpty) {
+      _selfName = selfId;
+    }
+
     if (_meetingState.isSignalingConnected) {
       logger.w('信令已初始化，跳过');
       return;
     }
-
-    _selfId = selfId;
 
     try {
       await _ws.connect(signalingUrl);
@@ -157,7 +165,11 @@ class WebRTCManager extends ChangeNotifier {
       );
 
       // 注册身份
-      _sendSignalingMessage({'type': 'register', 'session_id': _selfId});
+      _sendSignalingMessage({
+        'type': 'register',
+        'session_id': _selfId,
+        'self_name': _selfName,
+      });
 
       _updateMeetingState(isSignalingConnected: true);
       logger.i('✅ 信令初始化完成，用户ID: $_selfId');
@@ -743,6 +755,19 @@ class WebRTCManager extends ChangeNotifier {
     });
   }
 
+  void updateSelfName(String selfName) {
+    final normalized = selfName.trim();
+    if (normalized.isEmpty) {
+      _selfName = _selfId;
+      return;
+    }
+
+    _selfName = normalized;
+    if (_meetingState.isSignalingConnected && _meetingState.isInRoom) {
+      _broadcastMediaState();
+    }
+  }
+
   // ==================== 私有方法：本地媒体管理 ====================
 
   // ignore: unused_element
@@ -1061,12 +1086,21 @@ class WebRTCManager extends ChangeNotifier {
   }
   // ==================== 私有方法：远端 Peer 管理 ====================
 
-  Future<RemotePeer> _getOrCreateRemotePeer(String peerId) async {
+  Future<RemotePeer> _getOrCreateRemotePeer(String peerId, {String? peerName}) async {
     if (_remotePeers.containsKey(peerId)) {
+      final existing = _remotePeers[peerId]!;
+      final resolvedName = (peerName ?? '').trim();
+      if (resolvedName.isNotEmpty) {
+        existing.name = resolvedName;
+      }
       return _remotePeers[peerId]!;
     }
 
-    final peer = RemotePeer(id: peerId, name: peerId);
+    final resolvedName = (peerName ?? '').trim();
+    final peer = RemotePeer(
+      id: peerId,
+      name: resolvedName.isEmpty ? peerId : resolvedName,
+    );
 
     // 初始化渲染器
     final renderer = webrtc.RTCVideoRenderer();
@@ -1390,6 +1424,7 @@ class WebRTCManager extends ChangeNotifier {
       final type = data['type'] as String?;
       final fromId = (data['from'] ?? data['session_id'] ?? data['user_id'])
           ?.toString();
+        final fromName = data['from_name']?.toString();
 
       logger.d('📨 收到信令: $type from: $fromId');
 
@@ -1405,13 +1440,13 @@ class WebRTCManager extends ChangeNotifier {
 
         case 'user_joined':
           if (fromId != null && fromId != _selfId) {
-            _handleUserJoined(fromId);
+            _handleUserJoined(fromId, peerName: fromName);
           }
           break;
 
         case 'media_state':
           if (fromId != null) {
-            _handleMediaState(fromId, data);
+            _handleMediaState(fromId, data, fromName: fromName);
           }
           break;
 
@@ -1485,26 +1520,32 @@ class WebRTCManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _handleUserJoined(String peerId) async {
+  Future<void> _handleUserJoined(String peerId, {String? peerName}) async {
     logger.i('👤 新用户加入: $peerId');
 
     _sendSignalingMessage({
       'type': 'media_state',
       'from': _selfId,
+      'from_name': _selfName,
       'to': peerId,
       'videoOn': _isCameraOn || _isScreenSharing,
       'audioOn': _isMicrophoneOn,
     });
 
-    await _initiateCall(peerId);
+    await _initiateCall(peerId, peerName: peerName);
   }
 
   Future<void> _handleMediaState(
     String peerId,
     Map<String, dynamic> data,
+    {String? fromName}
   ) async {
-    final peer = _remotePeers[peerId];
-    if (peer == null) return;
+    final peer = await _getOrCreateRemotePeer(peerId, peerName: fromName);
+
+    final resolvedName = (fromName ?? '').trim();
+    if (resolvedName.isNotEmpty) {
+      peer.name = resolvedName;
+    }
 
     peer.isVideoOn = data['videoOn'] ?? false;
     peer.isAudioOn = data['audioOn'] ?? false;
@@ -1558,9 +1599,9 @@ class WebRTCManager extends ChangeNotifier {
     logger.w('⚠️ 房间已关闭: room=$roomId, type=$meetingType, reason=$reason');
   }
 
-  Future<void> _initiateCall(String peerId) async {
+  Future<void> _initiateCall(String peerId, {String? peerName}) async {
     try {
-      final peer = await _getOrCreateRemotePeer(peerId);
+      final peer = await _getOrCreateRemotePeer(peerId, peerName: peerName);
       await _createPeerConnection(peer);
       await _scheduleNegotiation(peerId, reason: 'initiate_call');
     } catch (e) {
@@ -1574,6 +1615,7 @@ class WebRTCManager extends ChangeNotifier {
         _sendSignalingMessage({
           'type': 'media_state',
           'from': _selfId,
+          'from_name': _selfName,
           'to': peerId,
           'videoOn': _isCameraOn || _isScreenSharing,
           'audioOn': _isMicrophoneOn,
@@ -1692,6 +1734,7 @@ class WebRTCManager extends ChangeNotifier {
     _sendSignalingMessage({
       'type': 'media_state',
       'from': _selfId,
+      'from_name': _selfName,
       'room': _meetingState.currentRoomId,
       'videoOn': _isCameraOn || _isScreenSharing,
       'audioOn': _isMicrophoneOn,

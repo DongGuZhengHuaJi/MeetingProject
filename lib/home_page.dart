@@ -16,18 +16,27 @@ final logger = Logger();
 //tofix: 2. 主持人退出
 class HomePage extends StatefulWidget {
   final String selfId;
+  final String selfName;
   final HttpMgr httpMgr;
 
-  const HomePage({super.key, required this.selfId, required this.httpMgr});
+  const HomePage({super.key, required this.selfId, required this.selfName, required this.httpMgr});
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
+  late String currentName;
+  bool _startUpdateName = false;
+  late final TextEditingController _nameEditController;
   late final HomeController _controller;
   Timer? _meetingStatusTimer;
   StreamSubscription<HomeUiEvent>? _controllerEventSub;
+  final LayerLink _avatarLayerLink = LayerLink();
+  OverlayEntry? _namePopoverEntry;
+  Timer? _namePopoverHideTimer;
+  bool _isHoveringAvatar = false;
+  bool _isHoveringPopover = false;
 
   List<Meeting> get _scheduledMeetings {
     return _controller.scheduledMeetings;
@@ -40,8 +49,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    currentName = widget.selfName;
+    _nameEditController = TextEditingController(text: currentName);
     _controller = HomeController(
       selfId: widget.selfId,
+      selfName: currentName,
       httpMgr: widget.httpMgr,
     );
     _controller.addListener(_onControllerUpdate);
@@ -58,6 +70,9 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _controllerEventSub?.cancel();
     _meetingStatusTimer?.cancel();
+    _namePopoverHideTimer?.cancel();
+    _removeUpdateNamePopover();
+    _nameEditController.dispose();
     _controller.removeListener(_onControllerUpdate);
     _controller.dispose();
     super.dispose();
@@ -123,6 +138,7 @@ class _HomePageState extends State<HomePage> {
         MaterialPageRoute(
           builder: (context) => MeetingPage(
             selfId: widget.selfId,
+            selfName: currentName,
             roomId: roomId,
             isHost: joinResult.isHost,
             signalingUrl: kSignalingUrl,
@@ -157,12 +173,25 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 children: [
                   const SizedBox(height: 40),
-                  const CircleAvatar(
-                    radius: 22,
-                    backgroundColor: Color(0xFF0052D9),
-                    child: Text(
-                      '头像',
-                      style: TextStyle(color: Colors.white, fontSize: 12),
+                  CompositedTransformTarget(
+                    link: _avatarLayerLink,
+                    child: MouseRegion(
+                      onEnter: (_) {
+                        _isHoveringAvatar = true;
+                        _showUpdateNamePopover();
+                      },
+                      onExit: (_) {
+                        _isHoveringAvatar = false;
+                        _scheduleHideUpdateNamePopover();
+                      },
+                      child: CircleAvatar(
+                        radius: 22,
+                        backgroundColor: const Color(0xFF0052D9),
+                        child: Text(
+                          _shortNameForAvatar(currentName),
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 25),
@@ -942,5 +971,179 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
     );
+  }
+
+  void _showUpdateNamePopover() {
+    _namePopoverHideTimer?.cancel();
+    if (_namePopoverEntry != null) {
+      return;
+    }
+
+    _namePopoverEntry = OverlayEntry(
+      builder: (context) => Positioned.fill(
+        child: IgnorePointer(
+          ignoring: false,
+          child: Stack(
+            children: [
+              CompositedTransformFollower(
+                link: _avatarLayerLink,
+                showWhenUnlinked: false,
+                offset: const Offset(56, -8),
+                child: MouseRegion(
+                  onEnter: (_) {
+                    _isHoveringPopover = true;
+                    _namePopoverHideTimer?.cancel();
+                  },
+                  onExit: (_) {
+                    _isHoveringPopover = false;
+                    _scheduleHideUpdateNamePopover();
+                  },
+                  child: Material(
+                    color: Colors.transparent,
+                    child: Container(
+                      width: 220,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Colors.black26,
+                            blurRadius: 8,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '用户ID: ${widget.selfId}',
+                            style: const TextStyle(
+                              fontSize: 14,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                          children: [
+                            const Text(
+                              '昵称: ',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            
+                            _startUpdateName ? Expanded(
+                              child: TextField(
+                                autofocus: true,
+                                controller: _nameEditController,
+                                onChanged: (value) {
+                                  currentName = value;
+                                },
+                                onSubmitted: (value) {
+                                  final normalized = value.trim().isEmpty
+                                      ? _controller.selfName
+                                      : value.trim();
+                                  _nameEditController.text = normalized;
+                                  _nameEditController.selection = TextSelection.collapsed(
+                                    offset: _nameEditController.text.length,
+                                  );
+                                  _startUpdateName = false;
+                                  _namePopoverEntry?.markNeedsBuild();
+                                  unawaited(_submitSelfName(normalized));
+                                },
+                              ),
+                            ) : Text(
+                              currentName,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Colors.black87,
+                              ),
+                            ),
+
+                            SizedBox(width: 5),
+
+                            IconButton(
+                              icon: const Icon(
+                                Icons.edit,
+                                size: 16,
+                              ),
+                              onPressed: () {
+                                _nameEditController.text = currentName;
+                                _nameEditController.selection =
+                                    TextSelection.collapsed(
+                                      offset: _nameEditController.text.length,
+                                    );
+                                _startUpdateName = true;
+                                _namePopoverEntry?.markNeedsBuild();
+                              },
+                            )
+                          ]),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    Overlay.of(context).insert(_namePopoverEntry!);
+  }
+
+  void _scheduleHideUpdateNamePopover() {
+    _namePopoverHideTimer?.cancel();
+    _namePopoverHideTimer = Timer(const Duration(milliseconds: 120), () {
+      if (!_isHoveringAvatar && !_isHoveringPopover) {
+        _removeUpdateNamePopover();
+      }
+    });
+  }
+
+  void _removeUpdateNamePopover() {
+    _namePopoverEntry?.remove();
+    _namePopoverEntry = null;
+    _isHoveringPopover = false;
+  }
+
+  Future<void> _submitSelfName(String name) async {
+    final previous = currentName;
+    final next = name.trim().isEmpty ? widget.selfId : name.trim();
+
+    try {
+      await _controller.updateSelfName(next);
+      if (!mounted) return;
+      setState(() {
+        currentName = _controller.selfName;
+      });
+      _nameEditController.text = currentName;
+      _nameEditController.selection = TextSelection.collapsed(
+        offset: _nameEditController.text.length,
+      );
+      _namePopoverEntry?.markNeedsBuild();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        currentName = previous;
+      });
+      _nameEditController.text = previous;
+      _namePopoverEntry?.markNeedsBuild();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('修改昵称失败: $e')),
+      );
+    }
+  }
+
+  String _shortNameForAvatar(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      return '用户';
+    }
+    return trimmed.length <= 2 ? trimmed : trimmed.substring(0, 2);
   }
 }

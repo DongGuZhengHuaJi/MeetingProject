@@ -8,6 +8,7 @@ import 'meeting_controller.dart';
 
 class MeetingPage extends StatefulWidget {
   final String selfId;
+  final String selfName;
   final String roomId;
   final bool isHost;
   final String signalingUrl;
@@ -17,6 +18,7 @@ class MeetingPage extends StatefulWidget {
   const MeetingPage({
     super.key,
     required this.selfId,
+    required this.selfName,
     required this.roomId,
     this.isHost = false,
     required this.signalingUrl,
@@ -51,6 +53,7 @@ class _MeetingPageState extends State<MeetingPage> {
     super.initState();
     _controller = MeetingController(
       selfId: widget.selfId,
+      selfName: widget.selfName,
       roomId: widget.roomId,
       isHost: widget.isHost,
       signalingUrl: widget.signalingUrl,
@@ -330,7 +333,7 @@ class _MeetingPageState extends State<MeetingPage> {
     if (text.isEmpty) return;
 
     _controller.addChatMessage(
-      senderName: '我',
+      senderName: widget.selfName,
       content: text,
       isSentBySelf: true,
     );
@@ -384,7 +387,7 @@ class _MeetingPageState extends State<MeetingPage> {
     list.add(
       _ParticipantViewModel(
         id: widget.selfId,
-        name: '我',
+        name: widget.selfName,
         renderer: _controller.manager.localRenderer,
         isVideoOn:
             _controller.manager.isCameraOn ||
@@ -1450,7 +1453,7 @@ class _MeetingPageState extends State<MeetingPage> {
                   shrinkWrap: true,
                   children: [
                     _buildParticipantListTile(
-                      name: '${widget.selfId} (我)',
+                      name: '${widget.selfName} (我)',
                       audioOn: _controller.manager.isMicrophoneOn,
                       videoOn:
                           _controller.manager.isCameraOn ||

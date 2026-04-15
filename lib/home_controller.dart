@@ -28,12 +28,17 @@ class HomeController extends ChangeNotifier {
   final String selfId;
   final HttpMgr httpMgr;
   final WebRTCManager manager;
+  String _selfName;
 
   HomeController({
     required this.selfId,
+    required String selfName,
     required this.httpMgr,
     WebRTCManager? manager,
-  }) : manager = manager ?? WebRTCManager();
+  }) : _selfName = selfName,
+       manager = manager ?? WebRTCManager() {
+    this.manager.updateSelfName(_selfName);
+  }
 
   final List<Meeting> _meetings = [];
   final StreamController<HomeUiEvent> _uiEventController =
@@ -46,6 +51,7 @@ class HomeController extends ChangeNotifier {
   Stream<HomeUiEvent> get uiEvents => _uiEventController.stream;
   bool get isQuickMeetingStarting => _isQuickMeetingStarting;
   bool get isScreenShareStarting => _isScreenShareStarting;
+  String get selfName => _selfName;
 
   List<Meeting> get scheduledMeetings {
     final result = _meetings
@@ -202,6 +208,7 @@ class HomeController extends ChangeNotifier {
         manager.selfId != selfId) {
       await manager.initializeSignaling(
         selfId: selfId,
+        selfName: _selfName,
         signalingUrl: kSignalingUrl,
       );
     }
@@ -214,6 +221,22 @@ class HomeController extends ChangeNotifier {
     }
 
     return manager.joinRoom(roomId: roomId, isHost: isHost, meetingType: meetingType);
+  }
+
+  Future<void> updateSelfName(String newName) async {
+    final normalized = newName.trim();
+    if (normalized.isEmpty || normalized == _selfName) {
+      return;
+    }
+
+    final saved = await httpMgr.updateSelfName(
+      userId: selfId,
+      newName: normalized,
+    );
+
+    _selfName = saved;
+    manager.updateSelfName(saved);
+    notifyListeners();
   }
 
   void _upsertMeeting({

@@ -24,6 +24,7 @@ class MeetingPageUiEvent {
 
 class MeetingController extends ChangeNotifier {
   final String selfId;
+  final String selfName;
   final String roomId;
   final bool isHost;
   final String signalingUrl;
@@ -32,6 +33,7 @@ class MeetingController extends ChangeNotifier {
 
   MeetingController({
     required this.selfId,
+    required this.selfName,
     required this.roomId,
     required this.isHost,
     required this.signalingUrl,
@@ -147,7 +149,9 @@ class MeetingController extends ChangeNotifier {
       case MeetingUiEventType.chatMessage:
         messages.add(
           Msg(
-            event.payload['from_name']?.toString() ?? '未知',
+            event.payload['from_name']?.toString() ??
+                event.payload['from']?.toString() ??
+                '未知',
             event.payload['content']?.toString() ?? '',
             false,
           ),

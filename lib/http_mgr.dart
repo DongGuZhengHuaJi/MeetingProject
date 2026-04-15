@@ -78,6 +78,7 @@ class HttpMgr {
 
   String? _accessToken;
   String? _refreshToken;
+  String? _selfName;
   Timer? _tokenRefreshTimer;
 
   static final HttpMgr _instance = HttpMgr._internal(
@@ -93,6 +94,7 @@ class HttpMgr {
 
   String? get accessToken => _accessToken;
   String? get refreshToken => _refreshToken;
+  String? get selfName => _selfName;
   bool get hasLogin =>
       (_accessToken?.isNotEmpty ?? false) &&
       (_refreshToken?.isNotEmpty ?? false);
@@ -105,6 +107,7 @@ class HttpMgr {
   void clearTokens() {
     _accessToken = null;
     _refreshToken = null;
+    _selfName = null;
     _tokenRefreshTimer?.cancel();
     _tokenRefreshTimer = null;
   }
@@ -116,7 +119,7 @@ class HttpMgr {
     return _postAction('register_user', {'from': userId, 'pwd': password});
   }
 
-  Future<AuthTokens> login({
+  Future<String> login({
     required String userId,
     required String password,
   }) async {
@@ -137,7 +140,32 @@ class HttpMgr {
       accessExpiresIn: tokens.accessExpiresIn,
     );
 
-    return tokens;
+    _selfName = rsp['self_name']?.toString().trim();
+    if (_selfName == null || _selfName!.isEmpty) {
+      _selfName = userId;
+    }
+
+    return _selfName!;
+  }
+
+  Future<String> updateSelfName({
+    required String userId,
+    required String newName,
+  }) async {
+    final normalized = newName.trim();
+    if (normalized.isEmpty) {
+      throw const ApiException('昵称不能为空');
+    }
+
+    final rsp = await postWithAccessToken(
+      action: 'update_user_name',
+      userId: userId,
+      payload: {'self_name': normalized},
+    );
+
+    final latest = rsp['self_name']?.toString().trim();
+    _selfName = (latest == null || latest.isEmpty) ? normalized : latest;
+    return _selfName!;
   }
 
   Future<List<Meeting>> getUserMeetings({required String userId}) async {

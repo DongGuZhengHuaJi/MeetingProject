@@ -4,6 +4,7 @@ import 'webrtc_mgr.dart';
 import 'http_mgr.dart';
 import 'register_page.dart';
 import 'app_env.dart';
+import 'home_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -35,7 +36,7 @@ class _LoginPageState extends State<LoginPage> {
 
       try {
         // 登录成功后，获取并保存 token
-        await httpMgr.login(userId: account, password: password);
+        final selfName = await httpMgr.login(userId: account, password: password);
 
         if (!mounted) return;
 
@@ -50,13 +51,15 @@ class _LoginPageState extends State<LoginPage> {
         // 登录时，全局初始化信令和 WebSocket，并完成注册
         await wtm.initializeSignaling(
           selfId: account,
+          selfName: selfName,
           signalingUrl: kSignalingUrl,
         );
 
-        Navigator.pushReplacementNamed(
+        Navigator.pushReplacement(
           context,
-          '/home',
-          arguments: {'selfId': account},
+          MaterialPageRoute(
+            builder: (context) => HomePage(selfId: account, selfName: selfName, httpMgr: httpMgr,),
+          ),
         );
 
         // 改变窗口为大尺寸
