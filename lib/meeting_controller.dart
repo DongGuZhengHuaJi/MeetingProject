@@ -4,6 +4,14 @@ import 'package:flutter/foundation.dart';
 
 import 'webrtc_mgr.dart';
 
+class Msg {
+  final String senderName;
+  final String content;
+  final bool isSentBySelf;
+
+  Msg(this.senderName, this.content, this.isSentBySelf);
+}
+
 enum MeetingPageUiEventType { showMessage, exitPage }
 
 class MeetingPageUiEvent {
@@ -36,6 +44,20 @@ class MeetingController extends ChangeNotifier {
   StreamSubscription<MeetingUiEvent>? _managerEventSub;
 
   Stream<MeetingPageUiEvent> get uiEvents => _uiEventController.stream;
+
+  List<Msg> messages = [];
+  List<Msg> get chatMessages => List.unmodifiable(messages);
+
+  void addChatMessage({
+    required String senderName,
+    required String content,
+    required bool isSentBySelf,
+  }) {
+    final trimmed = content.trim();
+    if (trimmed.isEmpty) return;
+    messages.add(Msg(senderName, trimmed, isSentBySelf));
+    notifyListeners();
+  }
 
   Future<void> initialize() async {
     manager.addListener(_relayManagerState);

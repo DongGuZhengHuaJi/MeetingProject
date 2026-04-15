@@ -30,14 +30,21 @@ class MeetingPage extends StatefulWidget {
 
 class _MeetingPageState extends State<MeetingPage> {
   late final MeetingController _controller;
+  final TextEditingController _chatInputController = TextEditingController();
+  final ScrollController _chatScrollController = ScrollController();
   bool _joinWithMic = false;
   bool _isLeaving = false;
+  bool _isChatPanelVisible = false;
+  Size? _windowSizeBeforeChat;
   StreamSubscription<MeetingPageUiEvent>? _controllerEventSub;
+  _MeetingLayoutMode _layoutMode = _MeetingLayoutMode.grid;
+  String? _activeSpeakerId;
 
   static const Color _pageBg = Color(0xFFF6F8FC);
   static const Color _brandBlue = Color(0xFF1677FF);
   static const Color _textPrimary = Color(0xFF1F2329);
   static const Color _textSecondary = Color(0xFF6B7280);
+  static const double _chatDockWidth = 360;
 
   @override
   void initState() {
@@ -56,7 +63,7 @@ class _MeetingPageState extends State<MeetingPage> {
       if (!mounted) return;
       _initializeMeeting();
     });
-    if(widget.openScreenShare) {
+    if (widget.openScreenShare) {
       _controller.manager.toggleScreenSharing();
     }
   }
@@ -249,6 +256,8 @@ class _MeetingPageState extends State<MeetingPage> {
   @override
   void dispose() {
     _controllerEventSub?.cancel();
+    _chatInputController.dispose();
+    _chatScrollController.dispose();
     _controller.removeListener(_onControllerUpdate);
     if (_controller.manager.isInRoom && !_isLeaving) {
       _isLeaving = true;
@@ -263,28 +272,108 @@ class _MeetingPageState extends State<MeetingPage> {
     // 构建参会者列表
     final participants = _buildParticipantList();
     final allVideosOff = participants.every((p) => !p.isVideoOn);
+    final activeSpeaker = _resolveActiveSpeaker(participants);
 
-    return Scaffold(
-      backgroundColor: _pageBg,
-      // appBar: _buildAppBar(),
-      body: Column(
-        children: [
-          _buildTopWindowBar(),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: allVideosOff
-                    ? _buildAvatarGrid(participants)
-                    : _buildVideoGrid(participants),
+    return DragToResizeArea(
+      resizeEdgeSize: 6,
+      child: Scaffold(
+        backgroundColor: _pageBg,
+        // appBar: _buildAppBar(),
+        body: Column(
+          children: [
+            _buildTopWindowBar(),
+            Expanded(
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: _layoutMode == _MeetingLayoutMode.grid
+                            ? (allVideosOff
+                                  ? _buildAvatarGrid(participants)
+                                  : _buildVideoGrid(participants))
+                            : _buildSpeakerLayout(
+                                participants: participants,
+                                activeSpeaker: activeSpeaker,
+                              ),
+                      ),
+                    ),
+                  ),
+                  if (_isChatPanelVisible)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 10, 12, 8),
+                      child: _buildDockedChatPanel(),
+                    ),
+                ],
               ),
             ),
-          ),
-          _buildBottomBar(),
-        ],
+            _buildBottomBar(),
+          ],
+        ),
       ),
     );
+  }
+
+  void _scrollChatToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_chatScrollController.hasClients) return;
+      _chatScrollController.jumpTo(
+        _chatScrollController.position.maxScrollExtent,
+      );
+    });
+  }
+
+  void _sendChatMessage() {
+    final text = _chatInputController.text.trim();
+    if (text.isEmpty) return;
+
+    _controller.addChatMessage(
+      senderName: '我',
+      content: text,
+      isSentBySelf: true,
+    );
+    _chatInputController.clear();
+    _scrollChatToBottom();
+  }
+
+  Future<void> _showChatPanel() async {
+    if (_isChatPanelVisible) {
+      _scrollChatToBottom();
+      return;
+    }
+
+    final isMaximized = await windowManager.isMaximized();
+    if (!isMaximized) {
+      _windowSizeBeforeChat ??= await windowManager.getSize();
+      await windowManager.setSize(
+        Size(
+          _windowSizeBeforeChat!.width + _chatDockWidth,
+          _windowSizeBeforeChat!.height,
+        ),
+      );
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isChatPanelVisible = true;
+    });
+    _scrollChatToBottom();
+  }
+
+  Future<void> _hideChatPanel() async {
+    if (!_isChatPanelVisible) return;
+
+    setState(() {
+      _isChatPanelVisible = false;
+    });
+
+    final isMaximized = await windowManager.isMaximized();
+    if (!isMaximized && _windowSizeBeforeChat != null) {
+      await windowManager.setSize(_windowSizeBeforeChat!);
+    }
+    _windowSizeBeforeChat = null;
   }
 
   /// 构建参会者列表（本地 + 远端）
@@ -320,6 +409,264 @@ class _MeetingPageState extends State<MeetingPage> {
     }
 
     return list;
+  }
+
+  _ParticipantViewModel _resolveActiveSpeaker(
+    List<_ParticipantViewModel> participants,
+  ) {
+    if (participants.isEmpty) {
+      return _ParticipantViewModel(
+        id: 'empty',
+        name: '无参会者',
+        renderer: null,
+        isVideoOn: false,
+        isAudioOn: false,
+        isLocal: false,
+      );
+    }
+
+    final current = _activeSpeakerId == null
+        ? null
+        : participants.where((p) => p.id == _activeSpeakerId).firstOrNull;
+    if (current != null) {
+      return current;
+    }
+
+    final firstVideoOn = participants.where((p) => p.isVideoOn).firstOrNull;
+    final fallback = firstVideoOn ?? participants.first;
+    _activeSpeakerId = fallback.id;
+    return fallback;
+  }
+
+  void _switchActiveSpeaker(
+    List<_ParticipantViewModel> participants,
+    int step,
+  ) {
+    if (participants.length <= 1) return;
+    final currentIndex = participants.indexWhere(
+      (p) => p.id == _activeSpeakerId,
+    );
+    final normalizedIndex = currentIndex < 0 ? 0 : currentIndex;
+    final nextIndex =
+        (normalizedIndex + step + participants.length) % participants.length;
+    setState(() {
+      _activeSpeakerId = participants[nextIndex].id;
+    });
+  }
+
+  Widget _buildSpeakerLayout({
+    required List<_ParticipantViewModel> participants,
+    required _ParticipantViewModel activeSpeaker,
+  }) {
+    final thumbnailParticipants = participants
+        .where((p) => p.id != activeSpeaker.id)
+        .toList();
+
+    return Container(
+      color: const Color(0xFFEEF2F8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
+              child: _buildSpeakerMain(
+                participants: participants,
+                activeSpeaker: activeSpeaker,
+              ),
+            ),
+          ),
+          if (thumbnailParticipants.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(0, 12, 12, 12),
+              child: _buildSpeakerThumbnails(
+                participants: thumbnailParticipants,
+                activeSpeakerId: activeSpeaker.id,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSpeakerMain({
+    required List<_ParticipantViewModel> participants,
+    required _ParticipantViewModel activeSpeaker,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFDDE4F0),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (activeSpeaker.isVideoOn && activeSpeaker.renderer != null)
+            _VideoRendererView(
+              renderer: activeSpeaker.renderer!,
+              mirror:
+                  activeSpeaker.isLocal && !_controller.manager.isScreenSharing,
+            )
+          else
+            Center(child: _buildCircularAvatar(activeSpeaker.name, 104)),
+          Positioned(
+            left: 14,
+            bottom: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.35),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    activeSpeaker.isAudioOn ? Icons.mic : Icons.mic_off,
+                    size: 14,
+                    color: Colors.white,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    activeSpeaker.name,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            left: 14,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: _buildSpeakerSwitchButton(
+                icon: Icons.chevron_left,
+                onTap: () => _switchActiveSpeaker(participants, -1),
+              ),
+            ),
+          ),
+          Positioned(
+            right: 14,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: _buildSpeakerSwitchButton(
+                icon: Icons.chevron_right,
+                onTap: () => _switchActiveSpeaker(participants, 1),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSpeakerSwitchButton({
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.2),
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white.withOpacity(0.4)),
+          ),
+          child: Icon(icon, color: Colors.white, size: 22),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSpeakerThumbnails({
+    required List<_ParticipantViewModel> participants,
+    required String activeSpeakerId,
+  }) {
+    return Container(
+      width: 118,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.75),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFD8DEEA)),
+      ),
+      child: ListView.separated(
+        itemCount: participants.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        itemBuilder: (context, index) {
+          final p = participants[index];
+          final isActive = p.id == activeSpeakerId;
+          return GestureDetector(
+            onTap: () {
+              setState(() {
+                _activeSpeakerId = p.id;
+              });
+            },
+            child: _buildSpeakerThumbnailItem(
+              participant: p,
+              isActive: isActive,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSpeakerThumbnailItem({
+    required _ParticipantViewModel participant,
+    required bool isActive,
+  }) {
+    return Container(
+      height: 74,
+      decoration: BoxDecoration(
+        color: const Color(0xFFDCE3F0),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isActive ? _brandBlue : const Color(0xFFC8D1DF),
+          width: isActive ? 2 : 1,
+        ),
+      ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (participant.isVideoOn && participant.renderer != null)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: _VideoRendererView(
+                renderer: participant.renderer!,
+                mirror:
+                    participant.isLocal && !_controller.manager.isScreenSharing,
+              ),
+            )
+          else
+            Center(child: _buildCircularAvatar(participant.name, 34)),
+          Positioned(
+            left: 4,
+            right: 4,
+            bottom: 4,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.35),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                participant.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 10),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // 顶部拖拽栏
@@ -377,6 +724,20 @@ class _MeetingPageState extends State<MeetingPage> {
                 size: 18,
               ),
               onPressed: () => windowManager.minimize(),
+            ),
+            IconButton(
+              icon: const Icon(
+                Icons.maximize,
+                color: Color(0xFF6B7280),
+                size: 18,
+              ),
+              onPressed: () async {
+                if (await windowManager.isMaximized()) {
+                  windowManager.unmaximize();
+                } else {
+                  windowManager.maximize();
+                }
+              },
             ),
             IconButton(
               icon: const Icon(Icons.close, color: Color(0xFF6B7280), size: 18),
@@ -615,10 +976,30 @@ class _MeetingPageState extends State<MeetingPage> {
             onTap: _controller.manager.toggleScreenSharing,
           ),
           _buildToolButton(
+            icon: Icons.chat_bubble_outline,
+            label: '聊天',
+            isActive: false,
+            onTap: _showChatPanel,
+          ),
+          _buildToolButton(
             icon: Icons.group_outlined,
             label: '成员',
             isActive: false,
             onTap: _showParticipantsList,
+          ),
+          _buildToolButton(
+            icon: _layoutMode == _MeetingLayoutMode.speaker
+                ? Icons.view_carousel_outlined
+                : Icons.grid_view_rounded,
+            label: _layoutMode == _MeetingLayoutMode.speaker ? '演讲者' : '网格',
+            isActive: _layoutMode == _MeetingLayoutMode.speaker,
+            onTap: () {
+              setState(() {
+                _layoutMode = _layoutMode == _MeetingLayoutMode.grid
+                    ? _MeetingLayoutMode.speaker
+                    : _MeetingLayoutMode.grid;
+              });
+            },
           ),
           _buildLeaveButton(),
         ],
@@ -1146,7 +1527,204 @@ class _MeetingPageState extends State<MeetingPage> {
       ),
     );
   }
+
+  Widget _buildDockedChatPanel() {
+    return Container(
+      width: _chatDockWidth,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFDDE4F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Container(
+            height: 46,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7FAFF),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(16),
+              ),
+              border: Border(
+                bottom: BorderSide(color: Colors.black.withOpacity(0.06)),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Text(
+                  '聊天',
+                  style: TextStyle(
+                    color: _textPrimary,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '消息 ${_controller.chatMessages.length}',
+                  style: const TextStyle(color: _textSecondary, fontSize: 12),
+                ),
+                const SizedBox(width: 8),
+                InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: _hideChatPanel,
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.close, size: 18, color: _textSecondary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFD),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE7ECF5)),
+                ),
+                child: _controller.chatMessages.isEmpty
+                    ? const Center(
+                        child: Text(
+                          '暂无消息，来发第一条吧',
+                          style: TextStyle(color: _textSecondary, fontSize: 13),
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: _chatScrollController,
+                        itemCount: _controller.chatMessages.length,
+                        itemBuilder: (context, index) {
+                          final msg = _controller.chatMessages[index];
+                          final isSelf = msg.isSentBySelf;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Align(
+                              alignment: isSelf
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 250,
+                                ),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 8,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: isSelf ? _brandBlue : Colors.white,
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: isSelf
+                                        ? null
+                                        : Border.all(
+                                            color: const Color(0xFFE3E9F4),
+                                          ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: isSelf
+                                        ? CrossAxisAlignment.end
+                                        : CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        msg.senderName,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: isSelf
+                                              ? Colors.white70
+                                              : _textSecondary,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        msg.content,
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          color: isSelf
+                                              ? Colors.white
+                                              : _textPrimary,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _chatInputController,
+                    onSubmitted: (_) => _sendChatMessage(),
+                    textInputAction: TextInputAction.send,
+                    decoration: InputDecoration(
+                      hintText: '输入消息...',
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 11,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: Color(0xFFD8DFEA)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: Color(0xFFD8DFEA)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: _brandBlue),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _sendChatMessage,
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(64, 42),
+                    backgroundColor: _brandBlue,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: const Text(
+                    '发送',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
+
+enum _MeetingLayoutMode { grid, speaker }
 
 class _DevicePickerItem {
   final String deviceId;
@@ -1192,15 +1770,16 @@ class _VideoRendererView extends StatefulWidget {
 class _VideoRendererViewState extends State<_VideoRendererView> {
   bool _isReady = false;
 
-  @override
-  void initState() {
-    super.initState();
-    // 初始检查：如果渲染器已经有画面了，直接显示
-    if (widget.renderer.videoWidth > 0) {
-      _isReady = true;
+  void _bindRenderer({required bool forceSetState}) {
+    final ready = widget.renderer.videoWidth > 0;
+    if (forceSetState && mounted) {
+      setState(() {
+        _isReady = ready;
+      });
+    } else {
+      _isReady = ready;
     }
 
-    // 监听分辨率变化
     widget.renderer.onResize = () {
       if (mounted && !_isReady && widget.renderer.videoWidth > 0) {
         setState(() {
@@ -1208,6 +1787,27 @@ class _VideoRendererViewState extends State<_VideoRendererView> {
         });
       }
     };
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _bindRenderer(forceSetState: false);
+  }
+
+  @override
+  void didUpdateWidget(covariant _VideoRendererView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.renderer != widget.renderer) {
+      oldWidget.renderer.onResize = null;
+      _bindRenderer(forceSetState: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.renderer.onResize = null;
+    super.dispose();
   }
 
   @override
@@ -1220,7 +1820,8 @@ class _VideoRendererViewState extends State<_VideoRendererView> {
       child: webrtc.RTCVideoView(
         widget.renderer,
         mirror: widget.mirror,
-        objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        // objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+        objectFit: webrtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
       ),
     );
   }

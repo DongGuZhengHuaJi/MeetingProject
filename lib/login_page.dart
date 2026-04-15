@@ -44,7 +44,6 @@ class _LoginPageState extends State<LoginPage> {
           _tipColor = Colors.green;
         });
 
-
         if (!mounted) return;
 
         final wtm = WebRTCManager();
@@ -100,144 +99,149 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F7F9),
-      body: Column(
-        children: [
-          // 自定义窗口栏（负责拖动和关闭）
-          const WindowCaptionArea(),
+    return DragToResizeArea(
+      resizeEdgeSize: 6,
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF5F7F9),
+        body: Column(
+          children: [
+            // 自定义窗口栏（负责拖动和关闭）
+            const WindowCaptionArea(),
 
-          Expanded(
-            child: Center(
-              child: Container(
-                constraints: const BoxConstraints(maxWidth: 350),
-                padding: const EdgeInsets.symmetric(horizontal: 30),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.white,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 10,
-                            offset: const Offset(0, 5),
+            Expanded(
+              child: Center(
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 350),
+                  padding: const EdgeInsets.symmetric(horizontal: 30),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.1),
+                              blurRadius: 10,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.person,
+                          size: 50,
+                          color: Colors.blueAccent,
+                        ),
+                      ),
+                      const SizedBox(height: 40),
+                      TextField(
+                        controller: _accountController,
+                        decoration: InputDecoration(
+                          hintText: '账号',
+                          filled: true,
+                          fillColor: Colors.white,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
                           ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.person,
-                        size: 50,
-                        color: Colors.blueAccent,
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-                    TextField(
-                      controller: _accountController,
-                      decoration: InputDecoration(
-                        hintText: '账号',
-                        filled: true,
-                        fillColor: Colors.white,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: _passwordController,
-                      obscureText: true,
-                      decoration: InputDecoration(
-                        hintText: '密码',
-                        filled: true,
-                        fillColor: Colors.white,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Padding(
-                        padding: const EdgeInsets.only(top: 8, left: 4),
-                        child: Text(
-                          _tipText,
-                          style: TextStyle(color: _tipColor, fontSize: 12),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 45,
-                      child: ElevatedButton(
-                        onPressed: _isLoading ? null : _doLogin,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0099FF),
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(
+                          border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none,
                           ),
                         ),
-                        child: _isLoading
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    Colors.white,
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _passwordController,
+                        obscureText: true,
+                        decoration: InputDecoration(
+                          hintText: '密码',
+                          filled: true,
+                          fillColor: Colors.white,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 8, left: 4),
+                          child: Text(
+                            _tipText,
+                            style: TextStyle(color: _tipColor, fontSize: 12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 45,
+                        child: ElevatedButton(
+                          onPressed: _isLoading ? null : _doLogin,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0099FF),
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          child: _isLoading
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      Colors.white,
+                                    ),
+                                  ),
+                                )
+                              : const Text(
+                                  "登 录",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
                                   ),
                                 ),
-                              )
-                            : const Text(
-                                "登 录",
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                ),
-                              ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    TextButton(
-                      onPressed: (){}, 
-                      child:const Text(
-                        "忘记密码？",
-                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      const SizedBox(height: 20),
+                      TextButton(
+                        onPressed: () {},
+                        child: const Text(
+                          "忘记密码？",
+                          style: TextStyle(color: Colors.grey, fontSize: 13),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextButton(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const RegisterPage()),
-                        );
-                      },
-                      child: const Text(
-                        "注册账号",
-                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      const SizedBox(height: 10),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const RegisterPage(),
+                            ),
+                          );
+                        },
+                        child: const Text(
+                          "注册账号",
+                          style: TextStyle(color: Colors.grey, fontSize: 13),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -267,6 +271,17 @@ class WindowCaptionArea extends StatelessWidget {
                 iconSize: 18,
                 icon: const Icon(Icons.minimize),
                 onPressed: () => windowManager.minimize(),
+              ),
+              IconButton(
+                iconSize: 18,
+                icon: const Icon(Icons.maximize),
+                onPressed: () async {
+                  if(await windowManager.isMaximized()) {
+                    windowManager.unmaximize();
+                  } else {
+                    windowManager.maximize();
+                  }
+                },
               ),
               IconButton(
                 iconSize: 18,

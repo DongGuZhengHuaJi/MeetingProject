@@ -145,53 +145,56 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.white,
-      body: Row(
-        children: [
-          Container(
-            width: 70,
-            color: const Color(0xFFF2F3F5),
-            child: Column(
-              children: [
-                const SizedBox(height: 40),
-                const CircleAvatar(
-                  radius: 22,
-                  backgroundColor: Color(0xFF0052D9),
-                  child: Text(
-                    '头像',
-                    style: TextStyle(color: Colors.white, fontSize: 12),
-                  ),
-                ),
-                const SizedBox(height: 25),
-                _sideIcon(Icons.videocam, '会议', isSelected: true),
-                const Spacer(),
-                _sideIcon(Icons.mail_outline, ''),
-                _sideIcon(Icons.settings_outlined, ''),
-                _sideIcon(Icons.person_outline, ''),
-                const SizedBox(height: 20),
-              ],
-            ),
-          ),
-          Expanded(
-            child: Column(
-              children: [
-                _buildTopBar(),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 40),
-                    child: Row(
-                      children: [
-                        Expanded(flex: 5, child: _buildLeftContent(context)),
-                        Expanded(flex: 6, child: _buildRightContent()),
-                      ],
+    return DragToResizeArea(
+      resizeEdgeSize: 6,
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        body: Row(
+          children: [
+            Container(
+              width: 70,
+              color: const Color(0xFFF2F3F5),
+              child: Column(
+                children: [
+                  const SizedBox(height: 40),
+                  const CircleAvatar(
+                    radius: 22,
+                    backgroundColor: Color(0xFF0052D9),
+                    child: Text(
+                      '头像',
+                      style: TextStyle(color: Colors.white, fontSize: 12),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 25),
+                  _sideIcon(Icons.videocam, '会议', isSelected: true),
+                  const Spacer(),
+                  _sideIcon(Icons.mail_outline, ''),
+                  _sideIcon(Icons.settings_outlined, ''),
+                  _sideIcon(Icons.person_outline, ''),
+                  const SizedBox(height: 20),
+                ],
+              ),
             ),
-          ),
-        ],
+            Expanded(
+              child: Column(
+                children: [
+                  _buildTopBar(),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: Row(
+                        children: [
+                          Expanded(flex: 5, child: _buildLeftContent(context)),
+                          Expanded(flex: 6, child: _buildRightContent()),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
