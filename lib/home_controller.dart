@@ -259,6 +259,7 @@ class HomeController extends ChangeNotifier {
           ),
         );
         break;
+      case MeetingUiEventType.chatMessage:
       case MeetingUiEventType.joinSucceeded:
       case MeetingUiEventType.joinFailed:
         break;

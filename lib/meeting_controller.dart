@@ -17,8 +17,9 @@ enum MeetingPageUiEventType { showMessage, exitPage }
 class MeetingPageUiEvent {
   final MeetingPageUiEventType type;
   final String message;
+  final Map<String, dynamic> payload;
 
-  const MeetingPageUiEvent({required this.type, required this.message});
+  const MeetingPageUiEvent({required this.type, required this.message, this.payload = const {}});
 }
 
 class MeetingController extends ChangeNotifier {
@@ -56,6 +57,8 @@ class MeetingController extends ChangeNotifier {
     final trimmed = content.trim();
     if (trimmed.isEmpty) return;
     messages.add(Msg(senderName, trimmed, isSentBySelf));
+
+    manager.sendMessage(from: selfId, fromName: senderName, content: trimmed);
     notifyListeners();
   }
 
@@ -140,6 +143,16 @@ class MeetingController extends ChangeNotifier {
             message: event.message,
           ),
         );
+        break;
+      case MeetingUiEventType.chatMessage:
+        messages.add(
+          Msg(
+            event.payload['from_name']?.toString() ?? '未知',
+            event.payload['content']?.toString() ?? '',
+            false,
+          ),
+        );
+        notifyListeners();
         break;
       case MeetingUiEventType.joinSucceeded:
       case MeetingUiEventType.reservationNotice:

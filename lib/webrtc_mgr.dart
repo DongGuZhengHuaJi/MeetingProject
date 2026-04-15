@@ -29,6 +29,7 @@ enum MeetingUiEventType {
   roomClosed,
   reservationNotice,
   signalingError,
+  chatMessage,
 }
 
 class MeetingUiEvent {
@@ -724,6 +725,22 @@ class WebRTCManager extends ChangeNotifier {
         await probeStream.dispose();
       }
     }
+  }
+
+  Future<void> sendMessage({
+    required String from,
+    required String fromName,
+    required String content,}) async
+  {
+    if(content.trim().isEmpty) return;
+    if(meetingState.currentRoomId == null) return;
+    _sendSignalingMessage({
+      'type': 'chat',
+      'from': from,
+      'from_name': fromName,
+      'content': content.trim(),
+      'room': _meetingState.currentRoomId,
+    });
   }
 
   // ==================== 私有方法：本地媒体管理 ====================
@@ -1434,7 +1451,15 @@ class WebRTCManager extends ChangeNotifier {
             ),
           );
           break;
-
+        case 'chat':
+          _emitUiEvent(
+            MeetingUiEvent(
+              type: MeetingUiEventType.chatMessage,
+              message: data['content']?.toString() ?? '',
+              payload: data,
+            ),
+          );
+          break;
         case 'error':
           final errMsg =
               data['message']?.toString() ?? 'Unknown signaling error';
