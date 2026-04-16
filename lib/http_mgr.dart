@@ -148,6 +148,15 @@ class HttpMgr {
     return _selfName!;
   }
 
+  Future<void> resetPassword({
+    required String userId,
+    required String newPassword,
+  }) async {
+    await _postAction(
+      'reset_password', {'from': userId, 'new_password': newPassword},
+    );
+  }
+
   Future<String> updateSelfName({
     required String userId,
     required String newName,

@@ -5,6 +5,7 @@ import 'http_mgr.dart';
 import 'register_page.dart';
 import 'app_env.dart';
 import 'home_page.dart';
+import 'forget_pwd_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -217,7 +218,14 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                       const SizedBox(height: 20),
                       TextButton(
-                        onPressed: () {},
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: 
+                              (context) => const ForgetPwdPage(),
+                            ),
+                          );
+                        },
                         child: const Text(
                           "忘记密码？",
                           style: TextStyle(color: Colors.grey, fontSize: 13),
