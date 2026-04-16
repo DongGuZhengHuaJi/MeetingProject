@@ -1495,6 +1495,11 @@ class WebRTCManager extends ChangeNotifier {
             ),
           );
           break;
+        case 'ping':
+          _sendSignalingMessage({
+            'type': 'pong',
+          });
+          break;
         case 'error':
           final errMsg =
               data['message']?.toString() ?? 'Unknown signaling error';
