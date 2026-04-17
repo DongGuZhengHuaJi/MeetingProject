@@ -19,7 +19,11 @@ class WebsocketMgr {
   final StreamController<String> _messageController = StreamController<String>.broadcast();
   Stream<String> get messages => _messageController.stream;
 
-  Future<void> connect(String url) async {
+  Future<void> connect(
+    String url, {
+    void Function()? onClosed,
+    void Function(Object error)? onError,
+  }) async {
     try {
       
       await _ws?.close(); // 先关闭已有连接
@@ -34,9 +38,11 @@ class WebsocketMgr {
         }
       }, onError: (error) {
         logger.e('WebSocket error: $error');
+        onError?.call(error);
         // todo:后期补全错误处理逻辑，比如重试连接等
       }, onDone: () {
         logger.w('WebSocket connection closed');
+        onClosed?.call();
         // todo:后期补全连接关闭处理逻辑，比如自动重连等
       });
     } catch (e) {
