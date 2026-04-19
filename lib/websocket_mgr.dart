@@ -26,7 +26,7 @@ class WebsocketMgr {
   }
 
   static const Duration _heartbeatInterval = Duration(seconds: 15);
-  static const Duration _heartbeatTimeout = Duration(seconds: 10);
+  static const Duration _heartbeatTimeout = Duration(seconds: 35);
   static const Duration _maxReconnectDelay = Duration(seconds: 30);
   static const int _maxReconnectAttempts = 10;
 
@@ -235,14 +235,15 @@ class WebsocketMgr {
   }
 
   void _handleTextMessage(String message) {
+    // Any inbound frame proves the transport is alive.
+    _lastHeartbeatTime = DateTime.now();
+
     if (message == "pong" || message.contains('"type":"pong"')) {
-      _lastHeartbeatTime = DateTime.now();
       _cleanupHeartbeatTimeout();
       return;
     }
 
     if (message == "ping" || message.contains('"type":"ping"')) {
-      _lastHeartbeatTime = DateTime.now();
       try {
         _ws?.sendText(jsonEncode({"type": "pong"}));
       } catch (e) {
@@ -302,11 +303,13 @@ class WebsocketMgr {
       if (!hasNetwork) {
         logger.w("Connectivity lost, stop reconnect attempts until network recovers");
         _reconnectTimer?.cancel();
+        unawaited(_cleanupSocket());
         _setState(WsConnectionState.disconnected);
         return;
       }
 
-      if (_connectionState != WsConnectionState.connected &&
+      if ((_connectionState == WsConnectionState.disconnected ||
+              _connectionState == WsConnectionState.reconnecting) &&
           !_isManuallyClosed &&
           !_isDisposed) {
         logger.i("Connectivity recovered, scheduling reconnect");
@@ -342,7 +345,9 @@ class WebsocketMgr {
 
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(delay, () {
-      if (!_isManuallyClosed && !_isDisposed) {
+      if (!_isManuallyClosed &&
+          !_isDisposed &&
+          _connectionState != WsConnectionState.connected) {
         _performConnect();
       }
     });
