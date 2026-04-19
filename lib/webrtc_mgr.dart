@@ -76,8 +76,6 @@ class WebRTCManager extends ChangeNotifier {
   String? _selectedMicrophoneId;
   bool _isLeavingRoom = false;
   bool _isCleaningLocalMedia = false;
-  bool _isRecoveringSignaling = false;
-  bool _allowSignalingReconnect = true;
   final Map<String, Future<void>> _peerOpChains = {};
   final Map<String, bool> _makingOffer = {};
   final Map<String, List<webrtc.RTCIceCandidate>> _pendingIceCandidates = {};
@@ -86,6 +84,7 @@ class WebRTCManager extends ChangeNotifier {
   MeetingState _meetingState = const MeetingState();
   final Map<String, RemotePeer> _remotePeers = {};
   StreamSubscription<String>? _wsSubscription;
+  StreamSubscription<WsConnectionState>? _wsConnectionStateSubscription;
   Completer<JoinRoomResult>? _joinAckCompleter;
   String? _pendingJoinRoomId;
   String _signalingUrl = '';
@@ -105,6 +104,7 @@ class WebRTCManager extends ChangeNotifier {
       {'urls': 'stun:stun.l.google.com:19302'},
     ],
   };
+
 
   // ==================== 公共 Getter ====================
   String get selfId => _selfId;
@@ -137,49 +137,92 @@ class WebRTCManager extends ChangeNotifier {
   /// [selfId] 当前用户唯一标识
   /// [signalingUrl] WebSocket 服务器地址
   Future<void> initializeSignaling({
-    required String selfId,
-    String? selfName,
-    required String signalingUrl,
-  }) async {
-    _selfId = selfId;
-    if (selfName != null && selfName.trim().isNotEmpty) {
-      _selfName = selfName.trim();
-    } else if (_selfName.isEmpty) {
-      _selfName = selfId;
-    }
-
-    if (_meetingState.isSignalingConnected) {
-      logger.w('信令已初始化，跳过');
-      return;
-    }
-
-    try {
-      // 监听信令消息
-      _wsSubscription = _ws.messages.listen(
-        _handleSignalingMessage,
-        onError: (error) {
-          logger.e('WebSocket 错误: $error');
-          _updateMeetingState(errorMessage: '信令连接错误: $error');
-        },
-        onDone: () {
-          logger.w('WebSocket 连接关闭');
-          _updateMeetingState(isSignalingConnected: false);
-          unawaited(_handleSignalingTransportClosed());
-        },
-      );
-
-      _signalingUrl = signalingUrl;
-      await _connectSignalingSocket();
-
-      _updateMeetingState(isSignalingConnected: true);
-      logger.i('✅ 信令初始化完成，用户ID: $_selfId');
-    } catch (e) {
-      logger.e('❌ 信令初始化失败: $e');
-      _updateMeetingState(errorMessage: '初始化失败: $e');
-      rethrow;
-    }
+  required String selfId,
+  String? selfName,
+  required String signalingUrl,
+}) async {
+  _selfId = selfId;
+  if (selfName != null && selfName.trim().isNotEmpty) {
+    _selfName = selfName.trim();
+  } else if (_selfName.isEmpty) {
+    _selfName = selfId;
   }
 
+  if (_meetingState.isSignalingConnected) {
+    logger.w('信令已初始化，跳过');
+    return;
+  }
+
+  try {
+    await _wsSubscription?.cancel();
+    await _wsConnectionStateSubscription?.cancel();
+
+    // 监听消息流（自动重连后此流不变，无需重新订阅）
+    _wsSubscription = _ws.messages.listen(
+      _handleSignalingMessage,
+      onError: (error) {
+        // 这个 onError 是 _messageController 的 error，正常情况下不会触发
+        logger.e('消息流错误: $error');
+      },
+      onDone: () {
+        // 只有 WebsocketMgr dispose 时才会触发
+        logger.w('消息流结束');
+        _updateMeetingState(isSignalingConnected: false);
+      },
+    );
+
+    _signalingUrl = signalingUrl;
+
+    // ★ 核心改动：connect 只负责建连，注册/重连逻辑放到 onConnected
+    await _ws.connect(
+      _signalingUrl,
+      onConnected: () {
+        _updateMeetingState(isSignalingConnected: true);
+
+        if (_reconnectToken.isEmpty) {
+          _sendSignalingMessage({
+            'type': 'register',
+            'session_id': _selfId,
+            'self_name': _selfName,
+          });
+        } else {
+          _sendSignalingMessage({
+            'type': 'reconnect',
+            'reconnect_token': _reconnectToken,
+          });
+        }
+      },
+      onClosed: () {
+        _updateMeetingState(isSignalingConnected: false);
+        if (_meetingState.isInRoom) {
+          _emitUiEvent(
+            MeetingUiEvent(
+              type: MeetingUiEventType.signalingError,
+              message: '信令连接已断开',
+            ),
+          );
+        }
+      },
+      onError: (error) {
+        logger.e('WebSocket 错误: $error');
+        _updateMeetingState(errorMessage: '信令错误: $error');
+      },
+    );
+
+    // 可选：把底层重连状态暴露给 UI（如显示"重连中..."）
+    _wsConnectionStateSubscription = _ws.connectionStateStream.listen((state) {
+      if (state == WsConnectionState.reconnecting) {
+        _updateMeetingState(isSignalingConnected: false);
+      }
+    });
+
+    logger.i('✅ 信令初始化完成，用户ID: $_selfId');
+  } catch (e) {
+    logger.e('❌ 信令初始化失败: $e');
+    _updateMeetingState(errorMessage: '初始化失败: $e');
+    rethrow;
+  }
+}
   /// 进入会议房间
   ///
   /// [roomId] 房间号
@@ -258,62 +301,6 @@ class WebRTCManager extends ChangeNotifier {
       );
       await _cleanupLocalMedia();
       rethrow;
-    }
-  }
-
-  Future<void> _connectSignalingSocket() async {
-    await _ws.connect(
-      _signalingUrl,
-      onClosed: () {
-        unawaited(_handleSignalingTransportClosed());
-      },
-      onError: (error) {
-        logger.e('WebSocket 传输层错误: $error');
-        unawaited(_handleSignalingTransportClosed());
-      },
-    );
-
-    if (_reconnectToken.isEmpty) {
-      _sendSignalingMessage({
-        'type': 'register',
-        'session_id': _selfId,
-        'self_name': _selfName,
-      });
-    } else {
-      _sendSignalingMessage({
-        'type': 'reconnect',
-        'reconnect_token': _reconnectToken,
-      });
-    }
-  }
-
-  Future<void> _handleSignalingTransportClosed() async {
-    if (_isRecoveringSignaling || !_meetingState.isInRoom || _signalingUrl.isEmpty) {
-      return;
-    }
-
-    if (!_allowSignalingReconnect) {
-      return;
-    }
-
-    if (_reconnectToken.isEmpty) {
-      logger.w('信令断开，但没有 reconnect_token，跳过自动重连');
-      return;
-    }
-
-    _isRecoveringSignaling = true;
-    try {
-      logger.w('开始自动恢复信令连接...');
-      await _connectSignalingSocket();
-      _updateMeetingState(isSignalingConnected: true);
-    } catch (e) {
-      logger.e('自动恢复信令连接失败: $e');
-      _updateMeetingState(
-        isSignalingConnected: false,
-        errorMessage: '信令重连失败: $e',
-      );
-    } finally {
-      _isRecoveringSignaling = false;
     }
   }
 
@@ -798,10 +785,10 @@ class WebRTCManager extends ChangeNotifier {
   Future<void> sendMessage({
     required String from,
     required String fromName,
-    required String content,}) async
-  {
-    if(content.trim().isEmpty) return;
-    if(meetingState.currentRoomId == null) return;
+    required String content,
+  }) async {
+    if (content.trim().isEmpty) return;
+    if (meetingState.currentRoomId == null) return;
     _sendSignalingMessage({
       'type': 'chat',
       'from': from,
@@ -1142,7 +1129,10 @@ class WebRTCManager extends ChangeNotifier {
   }
   // ==================== 私有方法：远端 Peer 管理 ====================
 
-  Future<RemotePeer> _getOrCreateRemotePeer(String peerId, {String? peerName}) async {
+  Future<RemotePeer> _getOrCreateRemotePeer(
+    String peerId, {
+    String? peerName,
+  }) async {
     if (_remotePeers.containsKey(peerId)) {
       final existing = _remotePeers[peerId]!;
       final resolvedName = (peerName ?? '').trim();
@@ -1480,7 +1470,7 @@ class WebRTCManager extends ChangeNotifier {
       final type = data['type'] as String?;
       final fromId = (data['from'] ?? data['session_id'] ?? data['user_id'])
           ?.toString();
-        final fromName = data['from_name']?.toString();
+      final fromName = data['from_name']?.toString();
 
       logger.d('📨 收到信令: $type from: $fromId');
 
@@ -1561,17 +1551,15 @@ class WebRTCManager extends ChangeNotifier {
           );
           break;
         case 'ping':
-          _sendSignalingMessage({
-            'type': 'pong',
-          });
+          _sendSignalingMessage({'type': 'pong'});
           break;
-        case 'user_connection_lost' :
+        case 'user_connection_lost':
           // 后续添加相关逻辑，如标记该用户连接不稳定、显示 UI 提示等
           if (fromId != null && _remotePeers.containsKey(fromId)) {
             _remotePeers[fromId]!.state = PeerConnectionState.disconnected;
           }
           break;
-        case 'user_reconnected' :
+        case 'user_reconnected':
           if (fromId != null && fromId != _selfId) {
             _sendSignalingMessage({
               'type': 'media_state',
@@ -1625,9 +1613,9 @@ class WebRTCManager extends ChangeNotifier {
 
   Future<void> _handleMediaState(
     String peerId,
-    Map<String, dynamic> data,
-    {String? fromName}
-  ) async {
+    Map<String, dynamic> data, {
+    String? fromName,
+  }) async {
     final peer = await _getOrCreateRemotePeer(peerId, peerName: fromName);
 
     final resolvedName = (fromName ?? '').trim();
@@ -1690,7 +1678,11 @@ class WebRTCManager extends ChangeNotifier {
   Future<void> _handleReconnectSuccess(Map<String, dynamic> data) async {
     final roomId = data['current_room']?.toString();
     if (roomId != null && roomId.isNotEmpty) {
-      _updateMeetingState(isInRoom: true, currentRoomId: roomId, errorMessage: null);
+      _updateMeetingState(
+        isInRoom: true,
+        currentRoomId: roomId,
+        errorMessage: null,
+      );
     }
 
     if (_meetingState.currentRoomId != null) {
@@ -1859,7 +1851,10 @@ class WebRTCManager extends ChangeNotifier {
 
   void _sendSignalingMessage(Map<String, dynamic> data) {
     data['access_token'] = HttpMgr.instance().accessToken; // 全局附加访问令牌
-    _ws.send(jsonEncode(data));
+    final sent = _ws.send(jsonEncode(data));
+    if (!sent) {
+      _updateMeetingState(isSignalingConnected: false);
+    }
   }
 
   void _updateMeetingState({
@@ -1898,13 +1893,13 @@ class WebRTCManager extends ChangeNotifier {
 
   @override
   void dispose() {
-    _allowSignalingReconnect = false;
     _wsSubscription?.cancel();
+    _wsConnectionStateSubscription?.cancel();
+    unawaited(_ws.dispose());
     _uiEventController.close();
     _cleanupAllRemotePeers();
     _cleanupLocalMedia();
     _localRenderer.dispose();
-    _isRecoveringSignaling = false;
     super.dispose();
   }
 }

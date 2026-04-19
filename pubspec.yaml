@@ -17,6 +17,7 @@ dependencies:
   web_socket: ^1.0.1
   logger: ^2.7.0
   change_notifier: ^0.28.0
+  connectivity_plus: ^5.0.2
 
 dev_dependencies:
   flutter_test:
