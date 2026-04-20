@@ -34,6 +34,7 @@ class WebsocketMgr {
   bool _isManuallyClosed = false;
   bool _isDisposed = false;
   bool _isConnecting = false; // 💡 独占锁，防止并发连接
+  ConnectivityResult _lastConnectivityResult = ConnectivityResult.none;
 
   int _connectEpoch = 0;
   int _reconnectAttempts = 0;
@@ -176,27 +177,35 @@ class WebsocketMgr {
   }
 
   Future<void> _startConnectivityListener() async {
-  await _connectivitySub?.cancel();
-  
-  _connectivitySub = _connectivity.onConnectivityChanged.listen((ConnectivityResult result) { 
-    logger.i("Connectivity changed: $result");
+    await _connectivitySub?.cancel();
     
-    // 判断是否有网络连接
-    final hasNetwork = result != ConnectivityResult.none;
+    // 💡 获取当前网络状态作为初始值，防止 Stream 第一次吐出当前状态时触发重连
+    _lastConnectivityResult = await _connectivity.checkConnectivity(); 
 
-    if (!hasNetwork) {
-      logger.w("Connectivity lost, stop reconnect attempts");
-      _reconnectTimer?.cancel();
-      _setState(WsConnectionState.disconnected);
-      return;
-    }
+    _connectivitySub = _connectivity.onConnectivityChanged.listen((ConnectivityResult result) { 
+      logger.i("Connectivity changed: $result");
+      
+      if (result == _lastConnectivityResult) {
+        return;
+      }
+      _lastConnectivityResult = result;
 
-    if (_connectionState == WsConnectionState.disconnected && !_isConnecting) {
-      logger.i("Connectivity recovered, scheduling reconnect");
-      _performConnect();
-    }
-  });
-}
+      final hasNetwork = result != ConnectivityResult.none;
+
+      if (!hasNetwork) {
+        logger.w("Connectivity lost, stop reconnect attempts");
+        _reconnectTimer?.cancel();
+        _setState(WsConnectionState.disconnected);
+        return;
+      }
+
+      if (_connectionState == WsConnectionState.connected || 
+          _connectionState == WsConnectionState.reconnecting) {
+        logger.i("Network environment changed, forcing reconnect...");
+        _scheduleReconnect(reason: "network_switched");
+      }
+    });
+  }
 
   bool send(String message) {
     if (_ws != null && _connectionState == WsConnectionState.connected) {
